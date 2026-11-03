@@ -221,3 +221,5 @@ __marimo__/
 
 # sya
 tests/validation/.synth-cache/
+
+tests/validation/.audio-cache/

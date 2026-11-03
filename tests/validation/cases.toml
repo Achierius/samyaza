@@ -193,3 +193,18 @@ status = "solved"
 lat = 47.91343
 lon = -97.18042
 tol_m = 300
+
+# ------------------------------------------------------------------ real-world recordings
+# Medora, ND: President's remarks at the Theodore Roosevelt Presidential Library dedication,
+# Burning Hills Amphitheatre (outdoors), 2026-07-01, public domain (White House video, Wikimedia
+# Commons). 10-minute excerpt from 220 s into the video (~13:28 MDT). Close-miked podium audio:
+# no aircraft are audible, so the correct output is "no flyovers detected" and, above all,
+# no claimed location.
+[[case]]
+name = "real-nd-medora-speech-no-aircraft"
+audio = "../data/audio/medora_nd_20260701_speech.opus"
+args = ["--date", "2026-07-01", "--tz", "America/Denver", "--state", "ND",
+        "--cache-dir", "@/../data", "--offline", "--terrain", "tiles:z8"]
+tags = ["real", "speech", "nd", "state", "date"]
+[case.expect]
+status = "none"

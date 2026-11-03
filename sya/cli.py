@@ -184,8 +184,12 @@ class RichUI:
         for col, j in (("pass", "left"), ("in", "right"), ("out", "right"), ("kept", "right"), ("time", "right"),
                        ("", "left")):
             t.add_column(col, justify=j)
-        names = sorted(self.log.passes, key=lambda n: (PASS_ORDER.index(n.split("[")[0]) if n.split("[")[0] in PASS_ORDER
-                                                       else -1, n))
+        def key(n):
+            base = n.split("[")[0]
+            idx = int(n.split("[")[1].rstrip("]")) if "[" in n else -1
+            return (PASS_ORDER.index(base) if base in PASS_ORDER else -1, idx, n)
+
+        names = sorted(self.log.passes, key=key)
         for n in names:
             s = self.log.passes[n]
             kept = (f"{100 * s.n_out / s.n_in:.3g}%" if s.n_in and s.n_out is not None and s.n_out <= s.n_in
@@ -280,6 +284,8 @@ def cmd_locate(a):
     else:
         with RichUI(log, enabled=not a.quiet) as ui:
             res = search(evs, world, reg, win, dur, cfg, log, ui)
+        if not a.quiet:
+            console.print()
         out = res.to_dict()
         if res.status == "solved":
             b = res.best

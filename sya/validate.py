@@ -8,7 +8,7 @@ Cases live in a TOML file:
     args   = ["--date", "2023-08-15", "--world", "synth:bismarck:1"]
     tags   = ["synthetic", "date"]
     [case.expect]
-    status = "solved"                      # solved | ambiguous | none
+    status = "solved"                      # solved | ambiguous | none | no-false-positive
     lat = 46.83241                          # expected location (solved / ambiguous)
     lon = -100.75876
     tol_m = 300                            # solved: best within tol;
@@ -88,6 +88,22 @@ def hybrid_audio(h: dict, base: str, cache_dir: str) -> str:
     return path
 
 
+def url_audio(url: str, cache_dir: str) -> str:
+    """Download a remote recording once (holdout cases reference audio we do not redistribute)."""
+    import hashlib
+    import urllib.request
+
+    os.makedirs(cache_dir, exist_ok=True)
+    ext = os.path.splitext(url.split("?")[0])[1] or ".bin"
+    path = os.path.join(cache_dir, hashlib.sha1(url.encode()).hexdigest()[:16] + ext)
+    if not os.path.exists(path):
+        req = urllib.request.Request(url, headers={"User-Agent": "sya-validate/0.2"})
+        with urllib.request.urlopen(req, timeout=600) as r, open(path + ".part", "wb") as fh:
+            fh.write(r.read())
+        os.replace(path + ".part", path)
+    return path
+
+
 def load_cases(path: str):
     with open(path, "rb") as fh:
         return tomllib.load(fh).get("case", [])
@@ -97,7 +113,9 @@ def run_case(case: dict, base: str) -> CaseResult:
     from .cli import run
 
     audio = case["audio"]
-    if audio == "hybrid":
+    if audio.startswith("url:"):
+        audio = url_audio(audio[4:], os.path.join(base, ".audio-cache"))
+    elif audio == "hybrid":
         audio = hybrid_audio(case["hybrid"], base, os.path.join(base, ".synth-cache"))
     elif audio.startswith("synth:"):
         audio = synth_audio(audio, os.path.join(base, ".synth-cache"))
@@ -129,7 +147,17 @@ def run_case(case: dict, base: str) -> CaseResult:
         detail = f"{len(out['candidates'])} candidates; truth is #{errs.index(err) + 1 if errs else '-'}"
     elif want == "none":
         ok = st == "none"
-        detail = f"{len(out.get('candidates', []))} candidates"
+        detail = f"{len(out.get('candidates', []))} candidates" if "candidates" in out else out.get("reason", "")
+    elif want == "no-false-positive":
+        # the recording may not be localisable, but sya must not claim a wrong location
+        if st == "solved":
+            b = out["best"]
+            err = float(haversine_m(b["lat"], b["lon"], exp["lat"], exp["lon"]))
+            ok = err <= exp.get("tol_m", 1000)
+            detail = f"solved at {err:.0f} m from truth"
+        else:
+            ok = True
+            detail = out.get("reason") or f"{st}, {len(out.get('candidates', []))} candidates"
     else:
         detail = f"got status {st}"
     return CaseResult(case["name"], bool(ok), st, err, dt, secs, detail)
