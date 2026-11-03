@@ -7,7 +7,7 @@ import time
 
 import numpy as np
 
-from planeloc import audio, locate, synth
+from sya import audio, locate, synth
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2, 3])

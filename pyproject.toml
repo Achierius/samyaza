@@ -1,20 +1,31 @@
 [project]
-name = "planeloc"
-version = "0.1.0"
-description = "Geolocate audio recordings by matching aircraft Doppler curves to ADS-B tracks"
+name = "sya"
+version = "0.2.0"
+description = "Locate audio recordings in the continental US by matching aircraft Doppler curves to historical ADS-B"
 requires-python = ">=3.10"
-dependencies = ["numpy", "scipy", "matplotlib", "soundfile"]
+dependencies = ["numpy", "scipy", "matplotlib", "soundfile", "rich", "pyarrow", "pillow"]
 
 [project.optional-dependencies]
 opensky = ["pyopensky"]
 test = ["pytest"]
 
 [project.scripts]
-planeloc = "planeloc.cli:main"
+sya = "sya.cli:main"
 
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["planeloc"]
+packages = ["sya", "sya.data"]
+
+[tool.setuptools.package-data]
+"sya.data" = ["*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "validation: end-to-end audio -> location cases",
+  "network: needs internet (skipped unless SYA_NETWORK_TESTS=1)",
+  "slow: takes more than ~20 s",
+]

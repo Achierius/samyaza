@@ -1,0 +1,120 @@
+# End-to-end validation: audio + flags -> location ± tolerance.
+# Run:  sya validate tests/validation/cases.toml      (or: pytest -m validation)
+#
+# Synthetic cases generate their audio deterministically from the spec (cached in
+# tests/validation/.synth-cache). Real-world cases use audio under tests/data/audio and the
+# permanently frozen ADS-B subset in tests/data (offline; no network needed).
+
+# ------------------------------------------------------------------ synthetic: time inputs
+[[case]]
+name = "synth-bismarck-single-date"
+audio = "synth:bismarck:1"
+args = ["--date", "2023-08-15", "--world", "synth:bismarck:1"]
+tags = ["synthetic", "date", "conus"]
+[case.expect]
+status = "solved"
+lat = 46.83241
+lon = -100.75876
+tol_m = 300
+start = "2023-08-15T16:12:32Z"
+tol_s = 5
+
+[[case]]
+name = "synth-fargo-date-range-local-tz"
+audio = "synth:fargo:2"
+args = ["--dates", "2023-06-06", "2023-06-08", "--tz", "America/Chicago", "--world", "synth:fargo:2"]
+tags = ["synthetic", "dates", "conus"]
+[case.expect]
+status = "solved"
+lat = 46.8655
+lon = -96.84501
+tol_m = 300
+start = "2023-06-07T16:28:58Z"
+tol_s = 5
+
+[[case]]
+name = "synth-phoenix-timestamp-range"
+audio = "synth:phoenix:3"
+args = ["--between", "2023-09-28T07:00", "2023-09-28T11:00", "--tz", "America/Phoenix", "--world", "synth:phoenix:3"]
+tags = ["synthetic", "between", "conus"]
+[case.expect]
+status = "solved"
+lat = 33.43101
+lon = -112.08564
+tol_m = 300
+start = "2023-09-28T16:05:17Z"
+tol_s = 5
+
+[[case]]
+name = "synth-flagstaff-at-tolerance"
+audio = "synth:flagstaff:4"
+args = ["--at", "2023-08-08T21:30Z", "--tolerance", "30m", "--world", "synth:flagstaff:4"]
+tags = ["synthetic", "at", "conus"]
+[case.expect]
+status = "solved"
+lat = 35.20081
+lon = -111.59109
+tol_m = 300
+
+[[case]]
+name = "synth-seattle-when-range"
+audio = "synth:seattle:5"
+args = ["--when", "2023-07-01T12:00Z..2023-07-01T23:00Z", "--world", "synth:seattle:5"]
+tags = ["synthetic", "when", "conus"]
+[case.expect]
+status = "solved"
+lat = 47.47215
+lon = -122.06763
+tol_m = 300
+
+# --------------------------------------------------------------- synthetic: area restrictions
+[[case]]
+name = "synth-bismarck-state-nd"
+audio = "synth:bismarck:1"
+args = ["--date", "2023-08-15", "--state", "ND", "--world", "synth:bismarck:1"]
+tags = ["synthetic", "state"]
+[case.expect]
+status = "solved"
+lat = 46.83241
+lon = -100.75876
+tol_m = 300
+
+[[case]]
+name = "synth-bismarck-wrong-state-az"
+audio = "synth:bismarck:1"
+args = ["--date", "2023-08-15", "--state", "Arizona", "--world", "synth:bismarck:1"]
+tags = ["synthetic", "state", "negative"]
+[case.expect]
+status = "none"
+
+[[case]]
+name = "synth-phoenix-radius"
+audio = "synth:phoenix:3"
+args = ["--date", "2023-09-28", "--center", "33.45,-112.07", "--radius", "15km", "--world", "synth:phoenix:3"]
+tags = ["synthetic", "radius"]
+[case.expect]
+status = "solved"
+lat = 33.43101
+lon = -112.08564
+tol_m = 300
+
+[[case]]
+name = "synth-phoenix-radius-excludes"
+audio = "synth:phoenix:3"
+args = ["--date", "2023-09-28", "--center", "33.0,-111.5", "--radius", "10km", "--world", "synth:phoenix:3"]
+tags = ["synthetic", "radius", "negative"]
+[case.expect]
+status = "none"
+
+# ------------------------------------------------- synthetic: ambiguity -> candidate list
+[[case]]
+name = "synth-phoenix-single-flyover-ambiguous"
+audio = "synth:phoenix:6:single"
+args = ["--date", "2023-09-28", "--world", "synth:phoenix:6:single", "--timeout", "30"]
+tags = ["synthetic", "ambiguous"]
+[case.expect]
+status = "ambiguous"
+lat = 33.4387
+lon = -112.04672
+tol_m = 1500
+within_top = 50

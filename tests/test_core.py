@@ -1,8 +1,8 @@
 import numpy as np
 
-from planeloc import audio, locate, synth
-from planeloc.geo import LocalFrame
-from planeloc.physics import received_ratio, speed_of_sound, straight_pass
+from sya import audio, locate, synth
+from sya.geo import LocalFrame
+from sya.physics import received_ratio, speed_of_sound, straight_pass
 
 C = speed_of_sound(15)
 
