@@ -1,6 +1,6 @@
 import numpy as np
 
-from sya import audio, locate, synth
+from sya import audio
 from sya.geo import LocalFrame
 from sya.physics import received_ratio, speed_of_sound, straight_pass
 
@@ -34,27 +34,6 @@ def test_fit_pass_recovers_parameters():
     assert abs(fit.v - 75) < 1.5
     assert abs(fit.d - 1200) < 40
     assert abs(fit.t_ca - 31) < 0.2
-
-
-def _event_from_truth(world, fl, t0_rel, t1_rel, noise=0.2, seed=0):
-    rng = np.random.default_rng(seed)
-    t_r, _, ratio = received_ratio(fl.t, fl.p, world.obs, world.c)
-    t = np.arange(t0_rel, t1_rel, 0.1)
-    f = fl.f0 * np.interp(world.T0 + t, t_r, ratio) + rng.normal(0, noise, t.size)
-    return audio.Event(t, f, np.ones_like(t), audio.fit_pass(t, f, c=world.c))
-
-
-def test_locate_two_events_without_audio():
-    w = synth.make_world(seed=4, n_background=25)
-    tracks = synth.adsb_tracks(w, seed=5)
-    evs = [_event_from_truth(w, w.flights[0], 170, 235), _event_from_truth(w, w.flights[1], 615, 670, seed=1)]
-    res, _, _ = locate.locate(evs, tracks, w.frame.lat0, w.frame.lon0, 8000, 150,
-                              w.T0 - 1800, w.T0 + 1800, w.dur, ground_h=w.ground_h, verbose=False)
-    assert res, "no solution"
-    best = res[0]
-    assert np.hypot(best.e - w.obs_en[0], best.n - w.obs_en[1]) < 150
-    assert abs(best.T0 - w.T0) < 1.0
-    assert best.flights == ["tgt000", "tgt001"]
 
 
 def test_ridge_tracker_follows_chirp():

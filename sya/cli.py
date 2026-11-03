@@ -20,7 +20,7 @@ from .timing import PassLog
 console = Console(stderr=True)
 out_console = Console()
 
-PASS_ORDER = ["load", "altitude", "resample", "terrain", "candidates", "region", "join", "dedupe", "silence",
+PASS_ORDER = ["decode", "events", "spectrogram", "harmonic-sum", "ridge", "fit", "load", "altitude", "resample", "terrain", "candidates", "region", "join", "dedupe", "silence",
               "prescore", "refine"]
 
 
@@ -152,7 +152,7 @@ def analyse_audio(a, log: PassLog):
     with log.timed("events", n_in=1) as h:
         evs, H = extract_events(x, fs, a.fmin, a.fmax, harmonics=a.harmonics, snr_thresh=a.snr,
                                 min_len_s=a.min_len, windows=[_window_arg(w) for w in a.window] if a.window else None,
-                                c=speed_of_sound(a.temp), max_slope_hz_s=a.max_slope)
+                                c=speed_of_sound(a.temp), max_slope_hz_s=a.max_slope, log=log)
         h["out"] = len(evs)
     return evs, H, len(x) / fs
 

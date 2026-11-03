@@ -247,17 +247,29 @@ class Event:
 
 def extract_events(
     x, fs, fmin, fmax, harmonics=3, win_s=1.0, hop_s=0.1, snr_thresh=3.0, min_len_s=20.0,
-    merge_gap_s=4.0, windows=None, c=None, max_slope_hz_s=12.0,
+    merge_gap_s=4.0, windows=None, c=None, max_slope_hz_s=12.0, log=None,
 ):
     """Find flyover tones and fit each one. `windows` = [(t0, t1), ...] to restrict manually."""
-    S = spectrogram(x, fs, fmax * harmonics, win_s, hop_s)
-    H = harmonic_sum(S, fmin, fmax, harmonics)
+    from contextlib import nullcontext
+
+    tm = (lambda name: log.timed(name)) if log is not None else (lambda name: nullcontext({}))
+    with tm("spectrogram"):
+        S = spectrogram(x, fs, fmax * harmonics, win_s, hop_s)
+    with tm("harmonic-sum"):
+        H = harmonic_sum(S, fmin, fmax, harmonics)
     low = 0.6 * snr_thresh  # hysteresis: seed at snr_thresh, extend down to `low`
     segments = windows
     if segments is None:
-        ridge = track_ridge(H, max_slope_hz_s)
-        sm = uniform_filter1d(ridge.snr, max(1, int(round(3.0 / hop_s))))
-        segments = _runs(H.t, sm > snr_thresh, sm > low, merge_gap_s, min_len_s)
+        with tm("ridge"):
+            ridge = track_ridge(H, max_slope_hz_s)
+            sm = uniform_filter1d(ridge.snr, max(1, int(round(3.0 / hop_s))))
+            segments = _runs(H.t, sm > snr_thresh, sm > low, merge_gap_s, min_len_s)
+    with tm("fit"):
+        events = _fit_segments(H, segments, snr_thresh, low, hop_s, max_slope_hz_s, c)
+    return events, H
+
+
+def _fit_segments(H, segments, snr_thresh, low, hop_s, max_slope_hz_s, c):
     events = []
     for a, b in segments:
         m = (H.t >= a) & (H.t <= b)
@@ -273,7 +285,7 @@ def extract_events(
         if not (5 < fit.v < 330) or fit.rms_hz > 3.0:
             continue
         events.append(Event(r.t[good], r.f[good], w, fit))
-    return events, H
+    return events
 
 
 def _runs(t, hi, lo, merge_gap_s, min_len_s):

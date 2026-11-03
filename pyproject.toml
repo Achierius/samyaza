@@ -28,4 +28,6 @@ markers = [
   "validation: end-to-end audio -> location cases",
   "network: needs internet (skipped unless SYA_NETWORK_TESTS=1)",
   "slow: takes more than ~20 s",
+  "holdout: held-out real-world cases (not part of the default run)",
 ]
+addopts = "-m 'not holdout'"

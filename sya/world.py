@@ -73,9 +73,11 @@ def _days(t_lo: float, t_hi: float):
 # --------------------------------------------------------------------------- sources
 class HFAdsbLol:
     """adsb.lol globe_history daily dumps mirrored as parquet on Hugging Face
-    (dataset alexisplacet/adsblol_globe_history, ODbL). One day = 256 shards by ICAO."""
+    (dataset alexisplacet/adsblol_globe_history, ODbL). One day = 256 trace shards + 48
+    half-hour heatmaps. The mirror lost the integer seconds of trace timestamps; they are
+    reconstructed from the heatmaps (sya.repair; median error ~0.5 s, IQR ~3 s)."""
 
-    name = "adsblol"
+    name = "adsblol-r1"
     repo = "alexisplacet/adsblol_globe_history"
     api = "https://huggingface.co/api/datasets/{repo}/tree/main"
     file_url = "https://huggingface.co/datasets/{repo}/resolve/main/{path}"
@@ -114,54 +116,98 @@ class HFAdsbLol:
         except OSError:
             return False
 
+    def _download(self, path, local):
+        if os.path.exists(local):
+            return local
+        url = self.file_url.format(repo=self.repo, path=path)
+        for attempt in range(4):
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "sya/0.2"})
+                with urllib.request.urlopen(req, timeout=180) as r:
+                    data = r.read()
+                with open(local + ".part", "wb") as fh:
+                    fh.write(data)
+                os.replace(local + ".part", local)
+                return local
+            except OSError:
+                if attempt == 3:
+                    raise
+                time.sleep(2 ** (attempt + 1))
+
     def fetch_day(self, day: date, bbox, progress=None, workers: int = 8):
-        """Download all shards for `day`, keep airborne rows inside bbox. Returns dict of columns."""
+        """Download one day, keep airborne rows inside bbox, and repair trace timestamps
+        (see sya.repair). Returns dict of columns."""
         import pyarrow.compute as pc
         import pyarrow.parquet as pq
+
+        from .repair import repair_shard
 
         d = self._day_dirs()[day.isoformat()]
         tmpdir = os.path.join(self.cache_dir, "adsb", self.name, "_tmp", day.isoformat())
         os.makedirs(tmpdir, exist_ok=True)
+        heat = [f"{d}/heatmaps/{i:02d}_positions.parquet" for i in range(48)]
         shards = [f"{d}/traces_{i:02x}.parquet" for i in range(256)]
+        total = len(heat) + len(shards)
 
-        def one(path):
-            local = os.path.join(tmpdir, os.path.basename(path))
-            if not os.path.exists(local):
-                for attempt in range(4):
-                    try:
-                        with urllib.request.urlopen(self.file_url.format(repo=self.repo, path=path), timeout=120) as r:
-                            data = r.read()
-                        with open(local + ".part", "wb") as fh:
-                            fh.write(data)
-                        os.replace(local + ".part", local)
-                        break
-                    except OSError:
-                        if attempt == 3:
-                            raise
-                        time.sleep(2 ** (attempt + 1))
-            t = pq.read_table(local, columns=["icao", "timestamp", "lat", "lon", "altitude", "alt_geom", "on_ground"])
-            m = pc.and_(pc.and_(pc.greater_equal(t["lat"], bbox[0]), pc.less_equal(t["lat"], bbox[2])),
-                        pc.and_(pc.greater_equal(t["lon"], bbox[1]), pc.less_equal(t["lon"], bbox[3])))
-            m = pc.and_(m, pc.invert(pc.fill_null(t["on_ground"], False)))
-            t = t.filter(m)
-            icao = np.array([b.hex() for b in t["icao"].to_pylist()], dtype=object)
-            ts = t["timestamp"].cast("int64").to_numpy() / 1e6
-            ag = t["alt_geom"].to_numpy(zero_copy_only=False).astype(float)
-            ab = t["altitude"].to_numpy(zero_copy_only=False).astype(float)
-            alt = np.where(np.isfinite(ag), ag, ab) * FT
+        def in_bbox(t, lat="lat", lon="lon"):
+            return pc.and_(pc.and_(pc.greater_equal(t[lat], bbox[0]), pc.less_equal(t[lat], bbox[2])),
+                           pc.and_(pc.greater_equal(t[lon], bbox[1]), pc.less_equal(t[lon], bbox[3])))
+
+        def one_heat(path):
+            local = self._download(path, os.path.join(tmpdir, path.replace("/", "_")))
+            t = pq.read_table(local, columns=["icao", "timestamp", "lat", "lon"])
+            t = t.filter(in_bbox(t))
             os.remove(local)
-            return dict(icao=icao, t=ts, lat=t["lat"].to_numpy().astype(float), lon=t["lon"].to_numpy().astype(float),
-                        alt_m=alt)
+            return (np.array([b.hex() for b in t["icao"].to_pylist()], dtype=object), t["timestamp"].to_numpy(),
+                    t["lat"].to_numpy().astype(float), t["lon"].to_numpy().astype(float))
 
         parts = []
         with ThreadPoolExecutor(workers) as ex:
-            futs = [ex.submit(one, s) for s in shards]
-            for f in as_completed(futs):
+            for f in as_completed([ex.submit(one_heat, h) for h in heat]):
                 parts.append(f.result())
                 if progress:
-                    progress(1, len(shards))
+                    progress(1, total)
+        hic = np.concatenate([p[0] for p in parts])
+        ht = np.concatenate([p[1] for p in parts]).astype(float)
+        hla = np.concatenate([p[2] for p in parts])
+        hlo = np.concatenate([p[3] for p in parts])
+        o = np.lexsort((ht, hic))
+        hic, ht, hla, hlo = hic[o], ht[o], hla[o], hlo[o]
+        brk = np.r_[0, np.nonzero(hic[1:] != hic[:-1])[0] + 1, hic.size]
+        heat_index = {hic[a]: (ht[a:b], hla[a:b], hlo[a:b]) for a, b in zip(brk[:-1], brk[1:])}
+
+        def one_trace(path):
+            local = self._download(path, os.path.join(tmpdir, os.path.basename(path)))
+            t = pq.read_table(local, columns=["icao", "timestamp", "lat", "lon", "altitude", "alt_geom",
+                                               "on_ground", "ground_speed"])
+            m = pc.and_(in_bbox(t), pc.invert(pc.fill_null(t["on_ground"], False)))
+            t = t.filter(m)
+            os.remove(local)
+            icao = np.array([b.hex() for b in t["icao"].to_pylist()], dtype=object)
+            us = t["timestamp"].cast("int64").to_numpy()
+            frac = (us % 1_000_000) / 1e6
+            lat = t["lat"].to_numpy().astype(float)
+            lon = t["lon"].to_numpy().astype(float)
+            gs = t["ground_speed"].to_numpy(zero_copy_only=False).astype(float) * 0.514444
+            ag = t["alt_geom"].to_numpy(zero_copy_only=False).astype(float)
+            ab = t["altitude"].to_numpy(zero_copy_only=False).astype(float)
+            alt = np.where(np.isfinite(ag), ag, ab) * FT
+            ts = repair_shard(icao, frac, lat, lon, heat_index, gs=gs)
+            ok = np.isfinite(ts)
+            return dict(icao=icao[ok], t=ts[ok], lat=lat[ok], lon=lon[ok], alt_m=alt[ok])
+
+        parts = []
+        with ThreadPoolExecutor(workers) as ex:
+            for f in as_completed([ex.submit(one_trace, s) for s in shards]):
+                parts.append(f.result())
+                if progress:
+                    progress(1, total)
         shutil.rmtree(tmpdir, ignore_errors=True)
-        return {k: np.concatenate([p[k] for p in parts]) for k in parts[0]}
+        cols = {k: np.concatenate([p[k] for p in parts]) for k in parts[0]}
+        # rows repaired into the neighbouring day are dropped (the other day has them too)
+        d0 = datetime(day.year, day.month, day.day, tzinfo=timezone.utc).timestamp()
+        keep = (cols["t"] >= d0) & (cols["t"] < d0 + 86400)
+        return {k: v[keep] for k, v in cols.items()}
 
 
 # ------------------------------------------------------------------------- cache

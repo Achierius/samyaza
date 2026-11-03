@@ -44,7 +44,9 @@ class SearchConfig:
     tol_v_min: float = 6.0
     tol_d_frac: float = 0.25
     tol_d_min: float = 150.0
-    tol_t_min: float = 4.0
+    tol_t_min: float = 6.0  # real ADS-B timestamps carry a few seconds of error
+    track_dt_sigma: float = 2.0  # prior on per-flight ADS-B time error (s) in refinement
+    track_dt_weight: float = 0.02
     join_radius_m: float = 700.0
     min_events: int = 2  # events that must be matched to an ADS-B flight (if >= 2 detected)
     silence_frac: float = 0.6  # silence radius = this * min detected d (0 disables)
@@ -280,16 +282,16 @@ def _local_tracks(rs: Resampled, segs, frame: LocalFrame):
     return out
 
 
-def curve_misfit(events, trs, obs, T0, c, huber=1.0):
+def curve_misfit(events, trs, obs, T0, c, huber=1.0, shifts=None):
     total, rms, f0s = 0.0, [], []
     used = 0
-    for ev, tr in zip(events, trs):
+    for k, (ev, tr) in enumerate(zip(events, trs)):
         if tr is None:
             rms.append(float("nan"))
             f0s.append(float("nan"))
             continue
         t, p = tr
-        t_abs = T0 + ev.t
+        t_abs = T0 + ev.t + (shifts[k] if shifts is not None else 0.0)
         m = (t >= t_abs[0] - 60) & (t <= t_abs[-1] + 5)
         if m.sum() < 5:
             return np.inf, [], []
@@ -348,14 +350,25 @@ def refine(pre, J: Joint, hits, events, rs, c, elev_fn, cfg: SearchConfig, log: 
             frame, gh = _setup_local(J.lat[i], J.lon[i], elev_fn)
             trs = _local_tracks(rs, J.segs[i], frame)
 
-            def obj(x):
-                return curve_misfit(events, trs, frame.ground_enu(x[0], x[1], gh), x[2], c)[0]
+            K = len(events)
+            sig, lam = cfg.track_dt_sigma, cfg.track_dt_weight
 
-            x0 = np.array([0.0, 0.0, T0])
-            simplex = np.array([x0, x0 + [200, 0, 0], x0 + [0, 200, 0], x0 + [0, 0, 1.5]])
+            def obj(x):
+                sh = x[3:] if sig > 0 else None
+                pen = lam * float(np.sum((x[3:] / sig) ** 2)) if sig > 0 else 0.0
+                return curve_misfit(events, trs, frame.ground_enu(x[0], x[1], gh), x[2], c, shifts=sh)[0] + pen
+
+            nx = 3 + (K if sig > 0 else 0)
+            x0 = np.zeros(nx)
+            x0[2] = T0
+            steps = [200, 200, 1.5] + [1.0] * (nx - 3)
+            simplex = np.vstack([x0] + [x0 + np.eye(nx)[i] * steps[i] for i in range(nx)])
             r = minimize(obj, x0, method="Nelder-Mead",
-                         options=dict(initial_simplex=simplex, xatol=1.0, fatol=1e-5, maxiter=500))
-            cost, rms, f0 = curve_misfit(events, trs, frame.ground_enu(r.x[0], r.x[1], gh), r.x[2], c)
+                         options=dict(initial_simplex=simplex, xatol=0.5, fatol=1e-5, maxiter=300 * nx))
+            sh = r.x[3:] if sig > 0 else None
+            cost, rms, f0 = curve_misfit(events, trs, frame.ground_enu(r.x[0], r.x[1], gh), r.x[2], c, shifts=sh)
+            if sig > 0:
+                cost += lam * float(np.sum((r.x[3:] / sig) ** 2))
             if not np.isfinite(cost):
                 continue
             lat, lon, _ = frame.from_enu(frame.ground_enu(r.x[0], r.x[1], gh))
