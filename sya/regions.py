@@ -10,6 +10,7 @@ import numpy as np
 from matplotlib.path import Path
 
 STATE_NAMES = {}  # filled lazily: name.lower() -> abbreviation
+_RASTERS = {}
 
 
 @lru_cache(maxsize=1)
@@ -69,11 +70,53 @@ class Region:
         idx = np.nonzero(ok)[0]
         if idx.size == 0:
             return res
+        if idx.size > 5000:
+            return self._contains_raster(lat, lon, idx, res)
         st = _states()
         for ab in self.states:
             s = st[ab]
             sb = s["bbox"]
             sub = idx[(lat[idx] >= sb[0]) & (lat[idx] <= sb[2]) & (lon[idx] >= sb[1]) & (lon[idx] <= sb[3])]
+            sub = sub[~res[sub]]
+            if sub.size:
+                res[sub] = _in_paths(s["paths"], lat[sub], lon[sub])
+        return res
+
+    def _contains_raster(self, lat, lon, idx, res, cell=0.05):
+        """Fast path: classify by a cached raster; exact polygon test only in border cells."""
+        key = (self.states, cell)
+        if key not in _RASTERS:
+            b = self.bbox
+            la = np.arange(b[0], b[2] + cell, cell)
+            lo = np.arange(b[1], b[3] + cell, cell)
+            LA, LO = np.meshgrid(la + cell / 2, lo + cell / 2, indexing="ij")
+            sub = Region(self.kind, self.label, self.bbox, self.states)
+            inside = sub._contains_exact(LA.ravel(), LO.ravel()).reshape(LA.shape)
+            pad = np.pad(inside, 1, mode="edge")
+            border = np.zeros_like(inside)
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    border |= pad[1 + dy:1 + dy + inside.shape[0], 1 + dx:1 + dx + inside.shape[1]] != inside
+            _RASTERS[key] = (la[0], lo[0], inside, border)
+        la0, lo0, inside, border = _RASTERS[key]
+        i = np.clip(((lat[idx] - la0) / cell).astype(int), 0, inside.shape[0] - 1)
+        j = np.clip(((lon[idx] - lo0) / cell).astype(int), 0, inside.shape[1] - 1)
+        res[idx] = inside[i, j]
+        bd = border[i, j]
+        if bd.any():
+            res[idx[bd]] = self._contains_exact(lat[idx[bd]], lon[idx[bd]])
+        return res
+
+    def _contains_exact(self, lat, lon):
+        lat = np.asarray(lat, float)
+        lon = np.asarray(lon, float)
+        res = np.zeros(lat.shape, bool)
+        st = _states()
+        idx = np.arange(lat.size)
+        for ab in self.states:
+            s = st[ab]
+            sb = s["bbox"]
+            sub = idx[(lat >= sb[0]) & (lat <= sb[2]) & (lon >= sb[1]) & (lon <= sb[3])]
             sub = sub[~res[sub]]
             if sub.size:
                 res[sub] = _in_paths(s["paths"], lat[sub], lon[sub])

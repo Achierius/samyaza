@@ -21,7 +21,7 @@ console = Console(stderr=True)
 out_console = Console()
 
 PASS_ORDER = ["decode", "events", "spectrogram", "harmonic-sum", "ridge", "fit", "load", "altitude", "resample", "terrain", "candidates", "region", "join", "dedupe", "silence",
-              "prescore", "refine"]
+              "prescore", "polish", "refine"]
 
 
 # ------------------------------------------------------------------ argument helpers

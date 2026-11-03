@@ -47,31 +47,40 @@ class TrackTable:
 
     @staticmethod
     def from_columns(icao, t, lat, lon, alt_m, max_gap_s: float = 300.0) -> "TrackTable":
-        icao = np.asarray(icao).astype(str)
+        import pyarrow as pa
+
         t = np.asarray(t, float)
         if t.size == 0:
             return TrackTable.empty()
-        order = np.lexsort((t, icao))
-        icao, t = icao[order], t[order]
+        # integer codes for the ICAO strings (hash-based, much faster than sorting strings)
+        enc = pa.array(np.asarray(icao).astype(str)).dictionary_encode()
+        codes = enc.indices.to_numpy(zero_copy_only=False).astype(np.int64)
+        names = np.asarray(enc.dictionary.to_pylist(), dtype=object)
+        order = np.lexsort((t, codes))
+        codes, t = codes[order], t[order]
         lat = np.asarray(lat, float)[order]
         lon = np.asarray(lon, float)[order]
         alt = np.asarray(alt_m, float)[order]
         ok = np.isfinite(lat) & np.isfinite(lon) & np.isfinite(alt)
-        same = np.r_[False, icao[1:] == icao[:-1]]
-        dup = same & np.r_[False, np.diff(t) <= 0.05]
-        ok &= ~dup
-        icao, t, lat, lon, alt = icao[ok], t[ok], lat[ok], lon[ok], alt[ok]
+        same = np.r_[False, codes[1:] == codes[:-1]]
+        ok &= ~(same & np.r_[False, np.diff(t) <= 0.05])
+        codes, t, lat, lon, alt = codes[ok], t[ok], lat[ok], lon[ok], alt[ok]
         if t.size == 0:
             return TrackTable.empty()
-        brk = np.r_[True, (icao[1:] != icao[:-1]) | (np.diff(t) > max_gap_s)]
+        brk = np.r_[True, (codes[1:] != codes[:-1]) | (np.diff(t) > max_gap_s)]
         starts = np.nonzero(brk)[0]
         offsets = np.r_[starts, t.size].astype(np.int64)
-        keep = np.diff(offsets) >= 2
-        if not keep.all():
-            rows = np.concatenate([np.arange(offsets[i], offsets[i + 1]) for i in np.nonzero(keep)[0]]) \
-                if keep.any() else np.zeros(0, int)
-            return TrackTable.from_columns(icao[rows], t[rows], lat[rows], lon[rows], alt[rows], max_gap_s)
-        return TrackTable(icao[starts], offsets, t, lat, lon, alt)
+        seglen = np.diff(offsets)
+        if (seglen < 2).any():
+            seg_id = np.repeat(np.arange(seglen.size), seglen)
+            rows = np.nonzero(seglen[seg_id] >= 2)[0]
+            codes, t, lat, lon, alt = codes[rows], t[rows], lat[rows], lon[rows], alt[rows]
+            if t.size == 0:
+                return TrackTable.empty()
+            brk = np.r_[True, (codes[1:] != codes[:-1]) | (np.diff(t) > max_gap_s)]
+            starts = np.nonzero(brk)[0]
+            offsets = np.r_[starts, t.size].astype(np.int64)
+        return TrackTable(names[codes[starts]], offsets, t, lat, lon, alt)
 
     @staticmethod
     def from_tracks(tracks: list[Track]) -> "TrackTable":

@@ -81,6 +81,8 @@ class TileTerrain:
         lon = np.asarray(lon, float)
         shape = lat.shape
         lat, lon = lat.ravel(), lon.ravel()
+        if lat.size == 0:
+            return np.zeros(shape)
         n = 2 ** self.z
         xf = (lon + 180) / 360 * n
         lr = np.radians(np.clip(lat, -85, 85))
@@ -90,11 +92,15 @@ class TileTerrain:
         py = np.clip(((yf - ty) * 256).astype(int), 0, 255)
         out = np.zeros(lat.size)
         keys = tx.astype(np.int64) * 100000 + ty
-        for k in np.unique(keys):
-            m = keys == k
-            arr = self._tile(int(k // 100000), int(k % 100000))
+        order = np.argsort(keys, kind="stable")
+        ks = keys[order]
+        brk = np.r_[0, np.nonzero(ks[1:] != ks[:-1])[0] + 1, ks.size]
+        for a, b in zip(brk[:-1], brk[1:]):
+            k = int(ks[a])
+            arr = self._tile(k // 100000, k % 100000)
             if arr is not None:
-                out[m] = arr[py[m], px[m]]
+                rows = order[a:b]
+                out[rows] = arr[py[rows], px[rows]]
         return (np.maximum(out, -100) + self.geoid).reshape(shape)
 
 

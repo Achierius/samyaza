@@ -98,7 +98,7 @@ def test_prescore_and_refine_converge(setup):
     hits = np.zeros(len(J.T0), int)
     dl = time.monotonic() + 60
     pre = search.prescore(J, hits, evs, rs, w.c, world.elevation, cfg, log, dl)
-    sols = search.refine(pre, J, hits, evs, rs, w.c, world.elevation, cfg, log, dl)
+    sols = search.refine(pre, evs, w.c, cfg, log, dl)
     best = min(sols, key=lambda s: s.cost)
     assert _err(w, best.lat, best.lon) < 60 and abs(best.T0 - w.T0) < 1.0
     assert max(best.rms_hz) < 0.6
@@ -112,6 +112,8 @@ def test_decide_logic():
     assert search.decide([mk(46.8, 0.1), mk(46.8005, 0.12)], cfg)[0] == "solved"   # same place
     assert search.decide([mk(46.8, 0.1), mk(47.2, 0.12)], cfg)[0] == "ambiguous"   # rival elsewhere
     assert search.decide([mk(46.8, 0.1), mk(47.2, 2.0)], cfg)[0] == "solved"       # rival much worse
+    one = Solution(46.8, -100, 0, 0.1, [0.3, float("nan")], [100, 100], ["a", None])
+    assert search.decide([one], cfg)[0] == "ambiguous"  # a single explained flyover is not enough
     bad = Solution(46.8, -100, 0, 5.0, [4.0, 5.0], [100, 100], ["a", "b"])
     assert search.decide([bad], cfg)[0] == "ambiguous"  # poor fit is never "solved"
 

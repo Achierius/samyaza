@@ -247,9 +247,17 @@ class Event:
 
 def extract_events(
     x, fs, fmin, fmax, harmonics=3, win_s=1.0, hop_s=0.1, snr_thresh=3.0, min_len_s=20.0,
-    merge_gap_s=4.0, windows=None, c=None, max_slope_hz_s=12.0, log=None,
+    merge_gap_s=4.0, windows=None, c=None, max_slope_hz_s=12.0, log=None, max_tracks=8,
+    max_rms_hz=1.5,
 ):
-    """Find flyover tones and fit each one. `windows` = [(t0, t1), ...] to restrict manually."""
+    """Find flyover tones and fit each one.
+
+    Automatic mode extracts tones iteratively: track the strongest ridge, cut it into
+    segments (SNR hysteresis, and at jumps faster than max_slope), fit each segment, then
+    mask that ridge (and its harmonics / sub-harmonics) and repeat up to `max_tracks`
+    times, so overlapping aircraft are separated. `windows` = [(t0, t1), ...] restricts the
+    analysis to manual windows (one tone each).
+    """
     from contextlib import nullcontext
 
     tm = (lambda name: log.timed(name)) if log is not None else (lambda name: nullcontext({}))
@@ -258,18 +266,117 @@ def extract_events(
     with tm("harmonic-sum"):
         H = harmonic_sum(S, fmin, fmax, harmonics)
     low = 0.6 * snr_thresh  # hysteresis: seed at snr_thresh, extend down to `low`
-    segments = windows
-    if segments is None:
+    if windows is not None:
+        with tm("fit"):
+            events = _fit_segments(H, windows, low, hop_s, max_slope_hz_s, c, max_rms_hz)
+        return events, H
+    events = []
+    Z = H.z.copy()
+    df = H.f[1] - H.f[0]
+    mask_bins = max(2, int(round(2.5 / df)))
+    jump_hz = max_slope_hz_s * hop_s * 1.5 + 0.5
+    for it in range(max_tracks):
         with tm("ridge"):
-            ridge = track_ridge(H, max_slope_hz_s)
+            ridge = track_ridge(Spectrogram(H.t, H.f, Z), max_slope_hz_s)
             sm = uniform_filter1d(ridge.snr, max(1, int(round(3.0 / hop_s))))
-            segments = _runs(H.t, sm > snr_thresh, sm > low, merge_gap_s, min_len_s)
-    with tm("fit"):
-        events = _fit_segments(H, segments, snr_thresh, low, hop_s, max_slope_hz_s, c)
-    return events, H
+            on_lo = sm > low
+            jumps = np.r_[False, np.abs(np.diff(ridge.f)) > jump_hz]
+            on_lo &= ~jumps
+            segs = _runs(H.t, sm > snr_thresh, on_lo, 0.0, min_len_s)
+        if not segs:
+            break
+        with tm("fit"):
+            snr1 = uniform_filter1d(ridge.snr, max(1, int(round(1.0 / hop_s))))
+            for a, b in segs:
+                events += _fit_scurves(ridge, snr1, a, b, low, hop_s, c, max_rms_hz)
+        # mask this ridge (all frames where it was "on"), its harmonics and sub-harmonics
+        rows = np.nonzero(on_lo)[0]
+        for k in (1.0, 2.0, 3.0, 0.5, 1 / 3):
+            fk = ridge.f[rows] * k
+            ok = (fk >= H.f[0]) & (fk <= H.f[-1])
+            jc = np.round((fk[ok] - H.f[0]) / df).astype(int)
+            rr = rows[ok]
+            for dj in range(-mask_bins, mask_bins + 1):
+                jj = np.clip(jc + dj, 0, Z.shape[1] - 1)
+                Z[rr, jj] = np.minimum(Z[rr, jj], 0.0)
+    return _dedupe_events(events), H
 
 
-def _fit_segments(H, segments, snr_thresh, low, hop_s, max_slope_hz_s, c):
+def _plausible(fit: "PassFit", max_rms_hz: float) -> bool:
+    return 15 < fit.v < 300 and 80 < fit.d < 10000 and fit.rms_hz <= max_rms_hz and _is_flyover(fit)
+
+
+def _fit_scurves(ridge, snr1, a, b, low, hop_s, c, max_rms_hz, min_drop_hz_s=0.25):
+    """Fit every Doppler S-curve inside segment [a, b] of a ridge.
+
+    A long ridge can hold several flyovers (or a flyover plus an unrelated steady tone),
+    so fit windows centred on each steep frequency descent, trying a few widths, and keep
+    the best plausible fit per descent."""
+    m = (ridge.t >= a) & (ridge.t <= b) & (snr1 > low)
+    idx = np.nonzero(m)[0]
+    if idx.size < 20:
+        return []
+    t, f = ridge.t[idx], ridge.f[idx]
+    fs = uniform_filter1d(f, max(3, int(round(3.0 / hop_s))))
+    slope = np.gradient(fs, t)
+    order = np.argsort(slope)
+    centres = []
+    for i in order:
+        if slope[i] > -min_drop_hz_s:
+            break
+        if all(abs(t[i] - t0) > 20 for t0 in centres):
+            centres.append(t[i])
+        if len(centres) >= 6:
+            break
+    if not centres:  # no clear descent: try the whole segment (e.g. partially observed pass)
+        centres = [0.5 * (t[0] + t[-1])]
+    out = []
+    for t0 in centres:
+        best = None
+        for hw in (20.0, 35.0, 60.0, 100.0):
+            w_ = (t >= t0 - hw) & (t <= t0 + hw)
+            if w_.sum() < 20 or t[w_][-1] - t[w_][0] < 30.0:
+                continue
+            ww = np.clip(ridge.snr[idx][w_], 0, 20)
+            fit = fit_pass(t[w_], f[w_], c=c, w=ww)
+            if not _plausible(fit, max_rms_hz):
+                continue
+            # prefer longer windows unless they fit clearly worse
+            score = fit.rms_hz / np.sqrt(w_.sum())
+            if best is None or score < best[0]:
+                best = (score, Event(t[w_], f[w_], ww, fit))
+        if best:
+            out.append(best[1])
+    return out
+
+
+def _is_flyover(fit: "PassFit") -> bool:
+    """The fitted closest approach must lie inside (or near) the observed segment, so the
+    S-curve's turning point was actually seen."""
+    span = fit.t_end - fit.t_start
+    return fit.t_start - 0.15 * span <= fit.t_ca <= fit.t_end + 0.15 * span
+
+
+def _dedupe_events(events):
+    """Drop events that are the same tone seen twice (overlapping time, similar f0)."""
+    events = sorted(events, key=lambda e: e.fit.rms_hz)
+    out = []
+    for e in events:
+        dup = False
+        for o in out:
+            ov = min(e.fit.t_end, o.fit.t_end) - max(e.fit.t_start, o.fit.t_start)
+            short = min(e.fit.t_end - e.fit.t_start, o.fit.t_end - o.fit.t_start)
+            if ov > 0.5 * short and abs(e.fit.t_ca - o.fit.t_ca) < 10:
+                ratio = e.fit.f0 / o.fit.f0
+                if any(abs(ratio - k) < 0.04 * k for k in (1, 2, 3, 0.5, 1 / 3)):
+                    dup = True
+                    break
+        if not dup:
+            out.append(e)
+    return sorted(out, key=lambda e: e.fit.t_ca)
+
+
+def _fit_segments(H, segments, low, hop_s, max_slope_hz_s, c, max_rms_hz=3.0):
     events = []
     for a, b in segments:
         m = (H.t >= a) & (H.t <= b)
@@ -282,7 +389,7 @@ def _fit_segments(H, segments, snr_thresh, low, hop_s, max_slope_hz_s, c):
             continue
         w = np.clip(r.snr[good], 0, 20)
         fit = fit_pass(r.t[good], r.f[good], c=c, w=w)
-        if not (5 < fit.v < 330) or fit.rms_hz > 3.0:
+        if not (5 < fit.v < 330) or fit.rms_hz > max_rms_hz:
             continue
         events.append(Event(r.t[good], r.f[good], w, fit))
     return events

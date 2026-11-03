@@ -51,6 +51,22 @@ class PassLog:
         for fn in self.listeners:
             fn(st)
 
+    def merge(self, passes: dict):
+        """Fold in PassStats collected elsewhere (e.g. a worker process)."""
+        for k, v in passes.items():
+            st = self.passes.setdefault(k, PassStat(k))
+            st.seconds += v.seconds
+            st.calls += v.calls
+            if v.n_in is not None:
+                st.n_in = (st.n_in or 0) + v.n_in
+            if v.n_out is not None:
+                st.n_out = (st.n_out or 0) + v.n_out
+            if v.note:
+                st.note = v.note
+        for fn in self.listeners:
+            for st in self.passes.values():
+                fn(st)
+
     def as_dict(self):
         return {k: dict(seconds=round(v.seconds, 4), n_in=v.n_in, n_out=v.n_out, calls=v.calls, note=v.note)
                 for k, v in self.passes.items()}

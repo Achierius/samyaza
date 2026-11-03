@@ -118,3 +118,8 @@ def test_worlds_share_interface(tmp_path):
 def test_tile_terrain_offline_missing_tile_is_sea_level(tmp_path):
     ter = TileTerrain(str(tmp_path), offline=True)
     assert abs(ter.elevation(np.array([46.8]), np.array([-100.8]))[0] - ter.geoid) < 1e-9
+
+
+def test_tile_terrain_empty_input(tmp_path):
+    ter = TileTerrain(str(tmp_path), offline=True)
+    assert ter.elevation(np.zeros(0), np.zeros(0)).shape == (0,)
