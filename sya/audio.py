@@ -99,7 +99,13 @@ def harmonic_sum(S: Spectrogram, fmin, fmax, harmonics=1) -> Spectrogram:
     for k in range(1, harmonics + 1):
         pos = k * fund / df
         if pos[-1] >= S.f.size - 1:
-            break
+            # The spectrum is computed up to fmax*harmonics, so the top harmonic's last bin falls
+            # off the end and that harmonic is skipped (all validation was tuned with this
+            # behaviour: the default --harmonics 3 effectively sums 2). The fundamental itself
+            # must never be skipped (that silently zeroed --harmonics 1).
+            if used:
+                break
+            pos = np.minimum(pos, S.f.size - 1.000001)
         i0 = np.floor(pos).astype(int)
         a = pos - i0
         out += (1 - a) * S.z[:, i0] + a * S.z[:, i0 + 1]
@@ -159,7 +165,8 @@ def track_ridge(S: Spectrogram, max_slope_hz_s=12.0, penalty=0.3) -> Ridge:
     j = np.clip(path, 1, S.f.size - 2)
     ym, y0, yp = S.z[rows, j - 1], S.z[rows, j], S.z[rows, j + 1]
     den = ym - 2 * y0 + yp
-    delta = np.where(np.abs(den) > 1e-9, 0.5 * (ym - yp) / den, 0.0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        delta = np.where(np.abs(den) > 1e-9, 0.5 * (ym - yp) / den, 0.0)
     delta = np.clip(delta, -0.5, 0.5)
     return Ridge(t=S.t, f=S.f[j] + delta * df, snr=S.z[rows, path])
 

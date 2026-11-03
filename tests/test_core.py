@@ -47,3 +47,12 @@ def test_ridge_tracker_follows_chirp():
     r = audio.track_ridge(H)
     truth = np.interp(r.t, t, f_inst)
     assert np.median(np.abs(r.f - truth)) < 0.5
+
+
+def test_harmonic_sum_single_harmonic_not_empty():
+    fs = 2000
+    t = np.arange(0, 20, 1 / fs)
+    x = np.sin(2 * np.pi * 150 * t) + np.random.default_rng(0).normal(0, 1, t.size)
+    S = audio.spectrogram(x, fs, 300)
+    H = audio.harmonic_sum(S, 60, 300, 1)
+    assert np.abs(H.z).max() > 1 and abs(H.f[np.argmax(H.z.mean(0))] - 150) < 1

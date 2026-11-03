@@ -329,7 +329,7 @@ class AdsbCache:
                 if on_missing:
                     on_missing(day)
                 continue
-            if not self.readonly:
+            if not (self.readonly or self.offline):
                 try:
                     with open(os.path.join(p, "_LAST_USED"), "w") as fh:
                         fh.write(str(time.time()))
