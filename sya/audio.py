@@ -46,6 +46,7 @@ class Spectrogram:
     t: np.ndarray  # frame centre times (s)
     f: np.ndarray  # bin frequencies (Hz)
     z: np.ndarray  # (T, F) whitened log power (robust z-score)
+    level: np.ndarray | None = None  # (T,) per-frame median log power before whitening
 
 
 def spectrogram(x, fs, fmax, win_s=1.0, hop_s=0.1, oversample=2, block=1024) -> Spectrogram:
@@ -74,7 +75,8 @@ def spectrogram(x, fs, fmax, win_s=1.0, hop_s=0.1, oversample=2, block=1024) -> 
         F = sfft.rfft(frames[a:a + block] * win, n=nfft, axis=1, workers=-1)[:, :nkeep]
         L[a:a + block] = np.log(F.real**2 + F.imag**2 + 1e-20)
     t = (np.arange(frames.shape[0]) * hop + nper / 2) / fs2
-    return Spectrogram(t=t, f=f[:nkeep], z=_whiten(L))
+    level = np.median(L[:, :: max(1, L.shape[1] // 400)], axis=1)
+    return Spectrogram(t=t, f=f[:nkeep], z=_whiten(L), level=level)
 
 
 def _whiten(L):
@@ -424,3 +426,49 @@ def _runs(t, hi, lo, merge_gap_s, min_len_s):
         else:
             merged.append(s)
     return [(a, b) for a, b in merged if b - a >= min_len_s]
+
+
+# ----------------------------------------------------------------------- quiet map
+@dataclass
+class QuietMap:
+    """Where in the recording an aircraft tone *would* have been detected had there been one.
+
+    quiet[i] covers [t[i], t[i] + 1 s): no broadband masking (wind, traffic, speech bursts more
+    than ~6 dB above the recording's typical level), no tonal energy above the detection
+    threshold, and not inside a detected flyover."""
+
+    t: np.ndarray
+    quiet: np.ndarray
+    duration: float
+
+    def is_quiet(self, t0: float, t1: float) -> bool:
+        if t0 < 0 or t1 > self.duration:
+            return False
+        i0, i1 = int(np.floor(t0)), int(np.ceil(t1))
+        seg = self.quiet[max(i0, 0): min(i1, self.quiet.size)]
+        return bool(seg.size) and bool(seg.all())
+
+    @property
+    def fraction(self):
+        return float(self.quiet.mean()) if self.quiet.size else 0.0
+
+
+def quiet_map(x, fs, fmin, fmax, harmonics, events, win_s=1.0, hop_s=0.1, snr_thresh=3.0,
+              mask_db=6.0, event_pad_s=5.0) -> QuietMap:
+    S = spectrogram(x, fs, fmax * harmonics, win_s, hop_s)
+    H = harmonic_sum(S, fmin, fmax, harmonics)
+    lvl = S.level
+    masked = lvl > np.median(lvl) + mask_db / 10 * np.log(10)
+    tonal = uniform_filter1d(H.z.max(axis=1), max(1, int(round(2.0 / hop_s)))) > snr_thresh
+    busy = masked | tonal
+    for e in events:
+        busy |= (H.t >= e.t[0] - event_pad_s) & (H.t <= e.t[-1] + event_pad_s)
+    dur = len(x) / fs
+    nb = int(np.floor(dur))
+    sec = np.floor(H.t).astype(int)
+    bad = np.zeros(nb, bool)
+    ok = (sec >= 0) & (sec < nb)
+    np.logical_or.at(bad, sec[ok], busy[ok])
+    covered = np.zeros(nb, bool)
+    covered[sec[ok]] = True
+    return QuietMap(np.arange(nb, dtype=float), covered & ~bad, dur)

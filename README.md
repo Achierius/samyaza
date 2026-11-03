@@ -129,11 +129,22 @@ on each chunk, and Rich shows their in/out counts and times live:
 | region[k] | Keep points inside CONUS, the state or the disc. Uses a 0.05° raster, with exact polygon tests only in border cells. |
 | join | Use a KD-tree in (position, scaled start time) to keep points where ≥ 2 flyovers agree. Anchors are the most selective flyovers; flyovers heard > 5 km away are left out of the join. |
 | dedupe | Keep one representative per (flight set, 20 s, ~2 km). |
-| silence | Penalise points where an unheard low aircraft passed closer than the detected flyovers. |
+| silence | Coarse penalty: an unheard low aircraft passed closer than 0.6 × the nearest detected flyover. |
 | prescore | Full Doppler-curve misfit along the real tracks. It uses 1 s decimated curves, a vectorised scan of start time (±15 s) and a 3×3 grid of positions (±500 m). |
 | polish | A short Nelder–Mead over (east, north, start) for the globally best few hundred candidates. |
 | refine | A full Nelder–Mead over (east, north, start, per-flight ADS-B time shift), with the shifts under a Gaussian prior. It then tries to attribute still-unexplained flyovers to any nearby flight ("explain-more") and re-refines. |
 
+* **Silence (gap) evidence.** `sya` builds a *quiet map* of the recording: the 1 s stretches
+  that have no broadband masking (more than 6 dB above the recording's typical level), no
+  tonal energy above the detection threshold, and no detected flyover. A candidate location
+  and time is charged 0.3 for each nearby ADS-B aircraft that should have been heard but
+  passed during a quiet stretch.
+  * *Should have been heard* is calibrated on the matched flyovers. Tone power falls as 1/r²,
+    so a matched flyover's ridge strength at distance `d` gives the range at which a similar
+    aircraft would still clear the detection threshold, with a 2-unit loudness margin,
+    clamped to 0.8–3 × `d`.
+  * The check runs in prescore (per-chunk ranking), polish and refine. Unheard aircraft are
+    listed in the candidate table and the JSON output; disable with `--no-silence-check`.
 * **Scoring.** Each flyover contributes a Huber misfit capped at 0.5, which is also the
   cost of leaving it unexplained. Residuals are measured relative to the tone frequency
   (expressed as Hz at a 100 Hz tone), so 1 kHz jet fan tones and 100 Hz propeller tones are
@@ -191,7 +202,7 @@ cannot tell the following apart:
 ## Validation results
 
 ```bash
-pytest -q                     # 38 unit/isolation tests + 16 end-to-end validation cases (offline, ~7 min)
+pytest -q                     # 40 unit/isolation tests + 16 end-to-end validation cases (offline, ~7 min)
 pytest -m holdout             # held-out real recordings (network: downloads audio + ADS-B days)
 sya validate tests/validation/cases.toml
 sya validate tests/validation/holdout.toml

@@ -137,3 +137,46 @@ def test_full_search_single_event_is_ambiguous(bismarck):
     assert res.status == "ambiguous" and len(res.candidates) > 1
     errs = [_err(w, c.lat, c.lon) for c in res.candidates]
     assert min(errs) < 1500
+
+
+def test_quiet_map_marks_tones_bursts_and_events():
+    from sya.audio import quiet_map
+    from sya.physics import speed_of_sound, straight_pass
+
+    fs = 2000
+    t = np.arange(0, 120, 1 / fs)
+    rng = np.random.default_rng(0)
+    x = rng.normal(0, 1, t.size)
+    tone = (t > 20) & (t < 40)
+    x[tone] += 0.5 * np.sin(2 * np.pi * 150 * t[tone])  # tonal stretch, not a detected event
+    burst = (t > 70) & (t < 80)
+    x[burst] *= 6.0  # broadband masking (~15 dB)
+    q = quiet_map(x, fs, 60, 300, 1, [], snr_thresh=3.0)
+    assert not q.is_quiet(25, 35)       # a tone was present: not "quiet"
+    assert not q.is_quiet(72, 78)       # masked
+    assert q.is_quiet(50, 60) and q.is_quiet(95, 110)
+    assert 0.4 < q.fraction < 0.9
+
+
+def test_unheard_aircraft_penalises_close_silent_pass(setup):
+    w, world, evs, cfg, rs, elev = setup
+    from sya.audio import QuietMap
+    from sya.geo import LocalFrame
+
+    lat, lon = w.obs_latlon
+    frame = LocalFrame(lat, lon, w.ground_h)
+    obs = frame.ground_enu(0.0, 0.0, w.ground_h)
+    # a slow aircraft passing 300 m overhead, 400 s into the recording (the heard ones are ~1.1-1.5 km)
+    t = w.T0 + 400 + np.arange(-120, 120, 1.0)
+    enu = np.column_stack([(t - t[120]) * 50.0, np.zeros_like(t), np.full_like(t, 300.0)]) + obs * [0, 0, 1]
+    lc = search.LocalCand(lat, lon, w.T0, w.ground_h, frame, [None, None], ["a", "b"], 0, 0.0,
+                          nearby=[("zz9999", t, enu)])
+    rms = [0.2, 0.2]
+    all_quiet = QuietMap(np.arange(900.0), np.ones(900, bool), 900.0)
+    busy = QuietMap(np.arange(900.0), np.zeros(900, bool), 900.0)
+    x = (0.0, 0.0, w.T0)
+    assert search.unheard_aircraft(lc, x, evs, rms, all_quiet, w.c, cfg) == ["zz9999"]
+    assert search.unheard_aircraft(lc, x, evs, rms, busy, w.c, cfg) == []  # masked: no evidence
+    far = [("zz9999", t, enu + [0, 3000.0, 0])]  # 3 km away: quieter than what we heard, no penalty
+    lc.nearby = far
+    assert search.unheard_aircraft(lc, x, evs, rms, all_quiet, w.c, cfg) == []

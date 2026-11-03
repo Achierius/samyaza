@@ -20,7 +20,7 @@ from .timing import PassLog
 console = Console(stderr=True)
 out_console = Console()
 
-PASS_ORDER = ["decode", "events", "spectrogram", "harmonic-sum", "ridge", "fit", "load", "altitude", "resample", "terrain", "candidates", "region", "join", "dedupe", "silence",
+PASS_ORDER = ["decode", "events", "spectrogram", "harmonic-sum", "ridge", "fit", "quiet-map", "load", "altitude", "resample", "terrain", "candidates", "region", "join", "dedupe", "silence",
               "prescore", "polish", "refine"]
 
 
@@ -160,6 +160,14 @@ def analyse_audio(a, log: PassLog):
                                 c=speed_of_sound(a.temp), max_slope_hz_s=a.max_slope, log=log,
                                 min_window_s=a.min_window)
         h["out"] = len(evs)
+    quiet = None
+    if not getattr(a, "no_silence_check", False):
+        from .audio import quiet_map
+
+        with log.timed("quiet-map") as h:
+            quiet = quiet_map(x, fs, a.fmin, a.fmax, a.harmonics, evs, snr_thresh=a.snr)
+            h["note"] = f"{quiet.fraction:.0%} of the recording is quiet"
+    a._quiet = quiet
     return evs, H, len(x) / fs
 
 
@@ -252,7 +260,7 @@ def solutions_table(sols, title):
         d = s.to_dict()
         t.add_row(str(i + 1), f"{s.lat:.5f}", f"{s.lon:.5f}", s.state or "", d["start_iso"], f"{s.cost:.3f}",
                   ", ".join("–" if not np.isfinite(r) else f"{r:.2f}" for r in s.rms_hz),
-                  ", ".join(f or "–" for f in s.flights), str(s.silence_hits))
+                  ", ".join(f or "–" for f in s.flights), ", ".join(s.unheard) or "–")
     return t
 
 
@@ -289,7 +297,7 @@ def cmd_locate(a):
         out = dict(status="none", reason="no flyovers detected", passes=log.as_dict())
     else:
         with RichUI(log, enabled=not a.quiet) as ui:
-            res = search(evs, world, reg, win, dur, cfg, log, ui)
+            res = search(evs, world, reg, win, dur, cfg, log, ui, quiet=getattr(a, "_quiet", None))
         if not a.quiet:
             console.print()
         out = res.to_dict()
@@ -450,6 +458,9 @@ def build_parser():
     s.add_argument("--chunk", type=float, default=3600.0, help="time-chunk size for the search (s)")
     s.add_argument("--min-events", type=int, help="flyovers that must match ADS-B (default 2)")
     s.add_argument("--use", help="comma-separated flyover indices to use")
+    s.add_argument("--no-silence-check", action="store_true",
+                   help="do not penalise locations where an aircraft should have been heard in a quiet "
+                        "stretch of the recording but wasn't")
     s.add_argument("--top", type=int, default=15, help="candidates to list when ambiguous")
     s.add_argument("--json", help="write full result JSON here")
     s.add_argument("--print-json", action="store_true")

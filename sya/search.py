@@ -54,6 +54,12 @@ class SearchConfig:
     min_events: int = 2  # events that must be matched to an ADS-B flight (if >= 2 detected)
     silence_frac: float = 0.6  # silence radius = this * min detected d (0 disables)
     silence_weight: float = 3.0
+    unheard_cost: float = 0.3  # per aircraft that should have been heard in a quiet stretch but wasn't
+    audible_frac: float = 0.8  # audible radius is at least this x the heard flyovers' distance ...
+    audible_max: float = 3.0  # ... and at most this x
+    audible_margin_z: float = 2.0  # loudness safety margin (whitened z units) in the calibration
+    detect_z: float = 3.0  # the detector's ridge threshold
+    unheard_pad_s: float = 8.0  # the stretch around the predicted pass that must be quiet
     max_reps: int = 4000
     prescore_top: int = 3000
     keep_per_chunk: int = 300
@@ -84,6 +90,7 @@ class Solution:
     f0: list
     flights: list
     silence_hits: int = 0
+    unheard: list = field(default_factory=list)  # aircraft that should have been heard but weren't
     stage: str = "refined"
     state: str | None = None
 
@@ -458,7 +465,7 @@ def _nearby_tracks(rs: Resampled, tree, low_rows, xyz, frame, t_lo, t_hi, radius
 
 
 def prescore(J: Joint, hits, events, rs, c, elev_fn, cfg: SearchConfig, log: PassLog, deadline,
-             rec_dur=900.0, tree=None, low_rows=None):
+             rec_dur=900.0, tree=None, low_rows=None, quiet=None):
     out = []
     with log.timed("prescore", n_in=len(J.T0)) as h:
         order = np.argsort(J.cost + cfg.silence_weight * hits)[: cfg.prescore_top]
@@ -492,6 +499,13 @@ def prescore(J: Joint, hits, events, rs, c, elev_fn, cfg: SearchConfig, log: Pas
             xyz = lc.frame.origin + lc.frame.ground_enu(0.0, 0.0, lc.gh) @ lc.frame.R
             lc.nearby = _nearby_tracks(rs, tree, low_rows, xyz, lc.frame, lc.T0 - 300, lc.T0 + rec_dur + 120,
                                        exclude=set(int(s) for s in J.segs[int(np.argmin(np.abs(J.T0 - lc.T0)))] if s >= 0))
+        if quiet is not None:
+            # silence evidence early, so coincidental matches in busy airspace do not crowd out the truth
+            for lc in out:
+                heard_rms = [0.0 if ic is not None else float("nan") for ic in lc.icaos]
+                lc.pre_cost += cfg.unheard_cost * len(unheard_aircraft(lc, (0.0, 0.0, lc.T0), events, heard_rms,
+                                                                       quiet, c, cfg))
+            out.sort(key=lambda lc: lc.pre_cost - cfg.join_bonus * sum(i is not None for i in lc.icaos))
         h["out"] = len(out)
     return out
 
@@ -554,7 +568,45 @@ def _explain_more(lc: LocalCand, x, events, c, cfg: SearchConfig):
     return added
 
 
-def polish(pool: list, events, c, cfg: SearchConfig, log: PassLog, deadline):
+def audible_radius(heard: list, cfg: SearchConfig) -> float:
+    """How far away a comparable aircraft would still have been detected, calibrated on the
+    flyovers we did hear: tone power falls as 1/r^2, i.e. 2 ln(r/d) nats of log power, which is
+    ~2 ln(r/d)/1.1 in the whitened z units the detector thresholds. Keep a safety margin (aircraft
+    differ in loudness) and clamp to [audible_frac, audible_max] x the heard distance."""
+    radii = []
+    for e in heard:
+        z = float(np.percentile(e.w, 90)) if len(e.w) else cfg.detect_z
+        r = e.fit.d * np.exp(max(z - cfg.detect_z - cfg.audible_margin_z, 0.0) * 1.1 / 2)
+        radii.append(float(np.clip(r, cfg.audible_frac * e.fit.d, cfg.audible_max * e.fit.d)))
+    return float(np.median(radii))
+
+
+def unheard_aircraft(lc: LocalCand, x, events, rms, quiet, c, cfg: SearchConfig):
+    """Nearby aircraft that the matched flyovers say should have been clearly audible (closer than
+    audible_frac x their median distance) and whose pass reaches the microphone during a quiet
+    stretch of the recording: evidence against this location/time. Returns their ICAOs."""
+    if quiet is None or not lc.nearby:
+        return []
+    good = [k for k, ic in enumerate(lc.icaos) if ic is not None and rms and k < len(rms)
+            and np.isfinite(rms[k]) and rms[k] < 2 * cfg.good_rms_hz]
+    R = audible_radius([events[k] for k in good] or [min(events, key=lambda e: e.fit.d)], cfg)
+    obs = lc.frame.ground_enu(x[0], x[1], lc.gh)
+    used = set(i for i in lc.icaos if i)
+    out = []
+    for icao, t, enu in lc.nearby:
+        if icao in used:
+            continue
+        r = np.linalg.norm(enu - obs, axis=1)
+        i = int(np.argmin(r))
+        if r[i] > R or i == 0 or i == len(r) - 1:  # not closer than the heard ones, or CPA not seen
+            continue
+        t_rx = t[i] + r[i] / c - x[2]
+        if quiet.is_quiet(t_rx - cfg.unheard_pad_s, t_rx + cfg.unheard_pad_s):
+            out.append(icao)
+    return out
+
+
+def polish(pool: list, events, c, cfg: SearchConfig, log: PassLog, deadline, quiet=None):
     """Quick local optimisation of (east, north, T0) for many candidates, so that ones that
     started a few hundred metres / seconds off the truth can compete before full refinement."""
     with log.timed("polish", n_in=len(pool)) as h:
@@ -574,6 +626,10 @@ def polish(pool: list, events, c, cfg: SearchConfig, log: PassLog, deadline):
                 lc.frame, lc.gh, lc.trs = _shift_frame(lc, r.x)
                 lc.T0 = float(r.x[2])
                 lc.pre_cost = float(r.fun + 0.05 * cfg.silence_weight * lc.hits)
+                if quiet is not None:
+                    rms = curve_misfit(events, lc.trs, lc.frame.ground_enu(0.0, 0.0, lc.gh), lc.T0, c)[1]
+                    lc.pre_cost += cfg.unheard_cost * len(unheard_aircraft(lc, (0.0, 0.0, lc.T0), events, rms,
+                                                                           quiet, c, cfg))
                 lat, lon, _ = lc.frame.from_enu(lc.frame.ground_enu(0.0, 0.0, lc.gh))
                 lc.lat, lc.lon = float(lat), float(lon)
             done.append(lc)
@@ -582,7 +638,7 @@ def polish(pool: list, events, c, cfg: SearchConfig, log: PassLog, deadline):
     return done + pool[len(done):]
 
 
-def refine(pool: list, events, c, cfg: SearchConfig, log: PassLog, deadline):
+def refine(pool: list, events, c, cfg: SearchConfig, log: PassLog, deadline, quiet=None):
     sols = []
     with log.timed("refine", n_in=len(pool)) as h:
         for n_done, lc in enumerate(pool[: cfg.refine_top]):
@@ -602,8 +658,10 @@ def refine(pool: list, events, c, cfg: SearchConfig, log: PassLog, deadline):
             fl = [ic if (ic is not None and k < len(rms) and np.isfinite(rms[k]) and rms[k] < 2 * cfg.good_rms_hz)
                   else None for k, ic in enumerate(lc.icaos)]
             rr = [r if fl[k] is not None else float("nan") for k, r in enumerate(rms)] if rms else rms
-            sols.append(Solution(float(lat), float(lon), float(x[2]), float(cost + 0.05 * cfg.silence_weight * lc.hits),
-                                 rr, f0, fl, lc.hits))
+            unheard = unheard_aircraft(lc, x, events, rr, quiet, c, cfg)
+            sols.append(Solution(float(lat), float(lon), float(x[2]),
+                                 float(cost + 0.05 * cfg.silence_weight * lc.hits + cfg.unheard_cost * len(unheard)),
+                                 rr, f0, fl, lc.hits, unheard))
         h["out"] = len(sols)
     return sols
 
@@ -709,12 +767,12 @@ def _process_chunk(ctx, a, b, budget_end, log: PassLog, progress=None):
     tree = cKDTree(rs.xyz[low_rows]) if low_rows.size else None
     hits = silence(J, rs, events, rec_dur, c, cfg, log, world.elevation, low_rows=low_rows)
     part = prescore(J, hits, ctx["events_fast"], rs, c, world.elevation, cfg, log, budget_end, rec_dur, tree,
-                    low_rows)
+                    low_rows, ctx.get("quiet"))
     return part, missing
 
 
 def search(events: list[Event], world, region: Region, window, rec_dur: float, cfg: SearchConfig | None = None,
-           log: PassLog | None = None, ui=None) -> SearchResult:
+           log: PassLog | None = None, ui=None, quiet=None) -> SearchResult:
     """window: TimeWindow for the recording start. ui: optional object with hooks (see cli.RichUI)."""
     cfg = cfg or SearchConfig()
     log = log or PassLog()
@@ -735,7 +793,7 @@ def search(events: list[Event], world, region: Region, window, rec_dur: float, c
     if ui:
         ui.start_chunks(len(chunks))
     missing_days = set()
-    ctx = dict(events=events, events_fast=decimate_events(events), world=world, region=region, cfg=cfg, c=c, rec_dur=rec_dur, max_d=max_d,
+    ctx = dict(events=events, events_fast=decimate_events(events), quiet=quiet, world=world, region=region, cfg=cfg, c=c, rec_dur=rec_dur, max_d=max_d,
                max_v=max_v, bbox=bbox)
     workers = max(1, min(cfg.workers, len(chunks)))
     grace = min(2.0, 0.05 * cfg.timeout_s)
@@ -795,8 +853,8 @@ def search(events: list[Event], world, region: Region, window, rec_dur: float, c
     # candidates whose join matched more flyovers consistently (position, T0, v, d)
     pool.sort(key=lambda lc: lc.pre_cost - cfg.join_bonus * sum(i is not None for i in lc.icaos))
     polish_deadline = time.monotonic() + 0.6 * max(deadline - time.monotonic(), 0)
-    pool = polish(pool, ctx["events_fast"], c, cfg, log, polish_deadline)
-    sols = refine(pool, events, c, cfg, log, deadline)
+    pool = polish(pool, ctx["events_fast"], c, cfg, log, polish_deadline, quiet)
+    sols = refine(pool, events, c, cfg, log, deadline, quiet)
     sols = [s_ for s_ in _merge_solutions(sols) if n_good(s_, cfg) >= 1]  # must explain something
     status, best = decide(sols, cfg, events)
     if missing_days:
