@@ -229,8 +229,16 @@ Investigation of those recordings against the ADS-B truth:
 hybrid cases), but I have not yet found a real public-domain recording with ≥ 2 tonal
 flyovers by ADS-B-equipped aircraft inside the data coverage. The White House Grand Canyon
 remarks (Red Butte Airfield, AZ, 2023-08-08 11:22 MST) are the best lead, but no
-redistributable copy was reachable from this environment. The three White House tarmac
-gaggles identified are listed in the PR description.
+redistributable copy was reachable from this environment (YouTube is bot-gated here, and
+the C-SPAN copy on archive.org is access-restricted). The other identified public-domain
+leads are White House tarmac press gaggles on Wikimedia Commons. Its file server was
+rate-limiting (HTTP 429) for hours, so none were downloaded:
+* Palm Beach International, 2026-01-19, about 18:26 EST (inside ADS-B coverage);
+* Joint Base Andrews, 2026-07-01, 08:30 EDT;
+* DFW, 2026-10-01, 15:14 CDT.
+
+The last two fall outside the mirror's coverage and would need an ADSBExchange
+1st-of-month source.
 
 ## Benchmarks
 
