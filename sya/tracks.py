@@ -53,7 +53,10 @@ class TrackTable:
         if t.size == 0:
             return TrackTable.empty()
         # integer codes for the ICAO strings (hash-based, much faster than sorting strings)
-        enc = pa.array(np.asarray(icao).astype(str)).dictionary_encode()
+        arr = pa.array(np.asarray(icao).astype(str))
+        if isinstance(arr, pa.ChunkedArray):  # very large inputs (> 2 GB of strings) come back chunked
+            arr = arr.combine_chunks()
+        enc = arr.dictionary_encode()
         codes = enc.indices.to_numpy(zero_copy_only=False).astype(np.int64)
         names = np.asarray(enc.dictionary.to_pylist(), dtype=object)
         order = np.lexsort((t, codes))

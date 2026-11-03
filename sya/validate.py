@@ -141,10 +141,25 @@ def run_case(case: dict, base: str) -> CaseResult:
         detail = f"best {b['lat']:.5f},{b['lon']:.5f}"
     elif want == "ambiguous" and st in ("ambiguous", "solved"):
         cands = out["candidates"][: exp.get("within_top", 15)]
-        errs = [float(haversine_m(c["lat"], c["lon"], exp["lat"], exp["lon"])) for c in cands]
-        err = min(errs) if errs else None
-        ok = err is not None and err <= exp["tol_m"]
-        detail = f"{len(out['candidates'])} candidates; truth is #{errs.index(err) + 1 if errs else '-'}"
+        if "flight" in exp:
+            # identify the right aircraft at the right time (a single flyover cannot fix the
+            # along-track position, so the location tolerance is loose)
+            t_exp = parse_timestamp(exp["start"])
+            hits = [i for i, c in enumerate(cands) if exp["flight"] in (c.get("flights") or [])
+                    and abs(c["T0"] - t_exp) <= exp.get("tol_s", 30)
+                    and haversine_m(c["lat"], c["lon"], exp["lat"], exp["lon"]) <= exp["tol_m"]]
+            ok = bool(hits)
+            if hits:
+                c = cands[hits[0]]
+                err = float(haversine_m(c["lat"], c["lon"], exp["lat"], exp["lon"]))
+                dt = c["T0"] - t_exp
+            detail = (f"{exp['flight']} at #{hits[0] + 1} of {len(out['candidates'])}" if hits
+                      else f"{exp['flight']} not among top {len(cands)}")
+        else:
+            errs = [float(haversine_m(c["lat"], c["lon"], exp["lat"], exp["lon"])) for c in cands]
+            err = min(errs) if errs else None
+            ok = err is not None and err <= exp["tol_m"]
+            detail = f"{len(out['candidates'])} candidates; truth is #{errs.index(err) + 1 if errs else '-'}"
     elif want == "none":
         ok = st == "none"
         detail = f"{len(out.get('candidates', []))} candidates" if "candidates" in out else out.get("reason", "")

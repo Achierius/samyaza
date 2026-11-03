@@ -114,6 +114,11 @@ def test_decide_logic():
     assert search.decide([mk(46.8, 0.1), mk(47.2, 2.0)], cfg)[0] == "solved"       # rival much worse
     one = Solution(46.8, -100, 0, 0.1, [0.3, float("nan")], [100, 100], ["a", None])
     assert search.decide([one], cfg)[0] == "ambiguous"  # a single explained flyover is not enough
+    comb = Solution(46.8, -100, 0, 0.1, [0.3, 0.3], [100, 150], ["a", "a"])
+    from sya.audio import Event, PassFit
+    evs = [Event(np.zeros(1), np.zeros(1), np.ones(1), PassFit(100, 50, 500, 140.0, 0.2, 10)),
+           Event(np.zeros(1), np.zeros(1), np.ones(1), PassFit(150, 50, 500, 141.0, 0.2, 10))]
+    assert search.decide([comb], cfg, evs)[0] == "ambiguous"  # two lines of one pass = one constraint
     bad = Solution(46.8, -100, 0, 5.0, [4.0, 5.0], [100, 100], ["a", "b"])
     assert search.decide([bad], cfg)[0] == "ambiguous"  # poor fit is never "solved"
 

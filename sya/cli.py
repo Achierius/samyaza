@@ -57,6 +57,9 @@ def add_area_args(p):
     g.add_argument("--center", help="LAT,LON; requires --radius")
     g.add_argument("--radius", help="radius around --center, e.g. 25km, 10mi, 5000 (m)")
     g.add_argument("--state", help="restrict to one CONUS state (code or name)")
+    g.add_argument("--anywhere", action="store_true",
+                   help="experimental: allow a --center/--radius disc outside the continental US "
+                        "(ADS-B for that region is fetched on demand)")
 
 
 def parse_radius(s: str) -> float:
@@ -75,7 +78,7 @@ def area(a) -> regions.Region:
     if a.center:
         lat, lon = map(float, a.center.split(","))
         try:
-            return regions.radius(lat, lon, parse_radius(a.radius))
+            return regions.radius(lat, lon, parse_radius(a.radius), anywhere=getattr(a, "anywhere", False))
         except ValueError as e:
             raise SystemExit(f"error: {e}")
     if a.state:
@@ -94,6 +97,8 @@ def add_audio_args(p):
     g.add_argument("--snr", type=float, default=3.0, help="ridge SNR threshold (z units)")
     g.add_argument("--min-len", type=float, default=20.0, help="minimum flyover length (s)")
     g.add_argument("--max-slope", type=float, default=12.0, help="max tone slope (Hz/s)")
+    g.add_argument("--min-window", type=float, default=30.0,
+                   help="shortest flyover curve to fit (s); lower it for very close/fast passes")
     g.add_argument("--window", action="append", help="manual flyover window START:END seconds (repeatable)")
     g.add_argument("--clip", help="analyse only START:END seconds of the file")
     g.add_argument("--temp", type=float, default=15.0, help="air temperature °C")
@@ -152,7 +157,8 @@ def analyse_audio(a, log: PassLog):
     with log.timed("events", n_in=1) as h:
         evs, H = extract_events(x, fs, a.fmin, a.fmax, harmonics=a.harmonics, snr_thresh=a.snr,
                                 min_len_s=a.min_len, windows=[_window_arg(w) for w in a.window] if a.window else None,
-                                c=speed_of_sound(a.temp), max_slope_hz_s=a.max_slope, log=log)
+                                c=speed_of_sound(a.temp), max_slope_hz_s=a.max_slope, log=log,
+                                min_window_s=a.min_window)
         h["out"] = len(evs)
     return evs, H, len(x) / fs
 
@@ -389,7 +395,14 @@ def cmd_cache(a):
             from .world import _days
 
             for d in _days(win.t_lo, win.t_hi):
-                p = cache.ensure_day(d, progress=ui.download)
+                if a.source == "adsbx-region":
+                    reg = area(a)
+                    p = cache.ensure_region(d, reg.padded_bbox(30000), win.t_lo - 3600, win.t_hi + 3600,
+                                            progress=ui.download)
+                elif a.center:
+                    p = cache.ensure_day(d, progress=ui.download, bbox=area(a).padded_bbox(30000))
+                else:
+                    p = cache.ensure_day(d, progress=ui.download)
                 console.print(f"{d}: {'cached at ' + p if p else 'not available from any source'}")
     elif a.action == "prune":
         removed = cache.prune(limit=parse_size(a.limit) if a.limit else None)
@@ -461,6 +474,9 @@ def build_parser():
     s.add_argument("--limit", help="size limit for prune, e.g. 5G")
     s.add_argument("--out", default="tests/data", help="freeze destination")
     s.add_argument("--zoom", type=int, default=8, help="terrain tile zoom to freeze")
+    s.add_argument("--source", default="auto", choices=["auto", "adsbx-region"],
+                   help="fetch: adsbx-region = ADS-B Exchange 1st-of-month samples, only around --center/--state "
+                        "and the time window (exact timestamps, small download)")
     add_time_args(s)
     add_area_args(s)
     s.set_defaults(fn=cmd_cache)

@@ -255,7 +255,7 @@ class Event:
 def extract_events(
     x, fs, fmin, fmax, harmonics=3, win_s=1.0, hop_s=0.1, snr_thresh=3.0, min_len_s=20.0,
     merge_gap_s=4.0, windows=None, c=None, max_slope_hz_s=12.0, log=None, max_tracks=8,
-    max_rms_hz=1.5,
+    max_rms_hz=1.5, min_window_s=30.0,
 ):
     """Find flyover tones and fit each one.
 
@@ -313,7 +313,7 @@ def _plausible(fit: "PassFit", max_rms_hz: float) -> bool:
     return 15 < fit.v < 300 and 80 < fit.d < 10000 and fit.rms_hz <= max_rms_hz and _is_flyover(fit)
 
 
-def _fit_scurves(ridge, snr1, a, b, low, hop_s, c, max_rms_hz, min_drop_hz_s=0.25):
+def _fit_scurves(ridge, snr1, a, b, low, hop_s, c, max_rms_hz, min_drop_hz_s=0.25, min_window_s=30.0):
     """Fit every Doppler S-curve inside segment [a, b] of a ridge.
 
     A long ridge can hold several flyovers (or a flyover plus an unrelated steady tone),
@@ -340,9 +340,9 @@ def _fit_scurves(ridge, snr1, a, b, low, hop_s, c, max_rms_hz, min_drop_hz_s=0.2
     out = []
     for t0 in centres:
         best = None
-        for hw in (20.0, 35.0, 60.0, 100.0):
+        for hw in ((5.0, 10.0) if min_window_s < 20 else ()) + (20.0, 35.0, 60.0, 100.0):
             w_ = (t >= t0 - hw) & (t <= t0 + hw)
-            if w_.sum() < 20 or t[w_][-1] - t[w_][0] < 30.0:
+            if w_.sum() < 20 or t[w_][-1] - t[w_][0] < min_window_s:
                 continue
             ww = np.clip(ridge.snr[idx][w_], 0, 20)
             fit = fit_pass(t[w_], f[w_], c=c, w=ww)

@@ -6,12 +6,18 @@ ADS-B flight tracks. It reimplements the idea in colsto's video
 ["I discovered a sound that leaks your exact location"](https://www.youtube.com/watch?v=UytYrhYLOKI).
 No code was published, so everything here is built from the physics.
 
-> **Status.** Synthetic recordings are located to roughly 10–100 m. Synthetic audio
-> rendered over *real* ADS-B traffic in North Dakota and Arizona is located to 15–100 m,
-> with start time within ±2 s. None of the real recordings collected so far has been
-> localisable, and in every case `sya` correctly declines to claim a location (details
-> under "Validation results"). An unconstrained CONUS × multi-hour search in dense
-> traffic is not reliable yet; constrain it with `--state` or `--center/--radius`.
+> **Status.**
+> * Synthetic recordings are located to roughly 10–100 m.
+> * Synthetic audio rendered over *real* ADS-B traffic in North Dakota and Arizona is located
+>   to 15–100 m, with start time within ±2 s.
+> * On **real field recordings**, `sya` recovers *which aircraft* flew over and *when*: the
+>   Doppler curve fits that aircraft's ADS-B track at the true location, and no other
+>   aircraft fits.
+> * A full blind position fix from real audio has **not** been demonstrated yet. Every real
+>   recording found so far had at most one usable ADS-B-equipped flyover; see "Real
+>   recordings" below.
+> * An unconstrained CONUS × multi-hour search in dense traffic is not reliable; constrain
+>   it with `--state` or `--center/--radius`.
 
 ## Quick start
 
@@ -88,6 +94,8 @@ read in `--tz` (default UTC).
 | `--temp` | air temperature (°C), which sets the speed of sound |
 | `--world` | `real` (default), `synth:<preset>[:seed]`, `csv:<file>`, `readsb:<dir>` |
 | `--cache-dir`, `--offline`, `--terrain tiles[:zN]\|flat:<m>` | data sources |
+| `--min-window` | shortest flyover curve to fit, in seconds (default 30); lower it for close, fast passes |
+| `--anywhere` | experimental: allow a `--center/--radius` disc outside CONUS (regional ADS-B fetched on demand) |
 
 ## How it works
 
@@ -127,8 +135,11 @@ on each chunk, and Rich shows their in/out counts and times live:
 | refine | A full Nelder–Mead over (east, north, start, per-flight ADS-B time shift), with the shifts under a Gaussian prior. It then tries to attribute still-unexplained flyovers to any nearby flight ("explain-more") and re-refines. |
 
 * **Scoring.** Each flyover contributes a Huber misfit capped at 0.5, which is also the
-  cost of leaving it unexplained.
-* **solved:** the best solution explains ≥ 2 flyovers at < 1 Hz RMS, and no other
+  cost of leaving it unexplained. Residuals are measured relative to the tone frequency
+  (expressed as Hz at a 100 Hz tone), so 1 kHz jet fan tones and 100 Hz propeller tones are
+  judged alike.
+* **solved:** the best solution explains ≥ 2 *independent* flyovers at < 1 Hz RMS
+  (several spectral lines of one aircraft's single pass count once), and no other
   solution elsewhere (> 1.5 km or > 30 s away) that also explains ≥ 2 flyovers is within
   0.5 of its cost.
 * **ambiguous:** otherwise, including after a timeout, the candidates are listed.
@@ -153,6 +164,9 @@ cannot tell the following apart:
   * **Accuracy.** Against ADSBExchange's full traces for the same aircraft on 2023-08-01,
     the median error is −0.5 s (IQR −1.7 to +1.0 s; 44% within 1 s, 68% within 2 s), with
     a tail of 10+ s. Refinement absorbs this through per-flight time shifts.
+* **ADSBExchange samples** (1st of each month since 2016, exact timestamps). Fetch a region with
+  `sya cache fetch --source adsbx-region --center … --radius … --between …`. Aircraft are
+  found from snapshots around the time window, then their full traces are downloaded.
 * **Terrain.** AWS Open Data *Terrarium* tiles (zoom 10 by default), with a −28 m CONUS
   geoid offset, because ADS-B geometric altitude is ellipsoidal.
 * **Synthetic worlds** (`synth:<preset>[:seed]`; presets `bismarck`, `fargo`, `phoenix`,
@@ -177,7 +191,7 @@ cannot tell the following apart:
 ## Validation results
 
 ```bash
-pytest -q                     # 38 unit/isolation tests + 15 end-to-end validation cases (offline, ~7 min)
+pytest -q                     # 38 unit/isolation tests + 16 end-to-end validation cases (offline, ~7 min)
 pytest -m holdout             # held-out real recordings (network: downloads audio + ADS-B days)
 sya validate tests/validation/cases.toml
 sya validate tests/validation/holdout.toml
@@ -211,8 +225,13 @@ tolerance (and start ± 5 s). All 15 pass:
 | **hybrid** Fargo ND (real ADS-B) | `--state ND --between` local | 38 m, +1.1 s |
 | **hybrid** Phoenix AZ (real ADS-B) | `--state AZ --between` local | 99 m, +1.5 s |
 | **hybrid** Phoenix AZ (real ADS-B) | `--date --center --radius` | 15 m, −0.6 s |
-| **hybrid** Grand Forks ND (real ADS-B) | `--date --center --radius` | 44 m (fragile, see note) |
+| **hybrid** Grand Forks ND (real ADS-B) | `--date --center --radius` | known failure (see below) |
 | **real** Medora ND speech, 2026-07-01 (public domain) | `--state ND --date` | no flyovers detected (correct: podium audio, no aircraft) |
+| **real** Iowa City IA field recording, 2023-12-04 (public domain) | `--at --tolerance --center --radius` | blind: correct aircraft `ade930` at #2, start within 14 s; position 4.9 km along-track (one flyover) |
+
+The Grand Forks hybrid case is marked as a known failure (`xfail`). It is the most fragile
+busy-pattern scene in the suite, and it broke when misfit residuals became frequency-relative,
+a change needed for real jet fan tones.
 
 **Held-out real recordings** (`tests/validation/holdout.toml`, public domain or CC sound-map
 field recordings with GPS and time): Rockaway Park NY under JFK arrivals, a Brooklyn street
@@ -225,20 +244,64 @@ Investigation of those recordings against the ADS-B truth:
 * **Brooklyn.** The helicopter Doppler sweeps are explained by no ADS-B flight.
 * **Verde.** No low traffic within 8 km.
 
-**Honest summary of real-world performance:** the pipeline works on real *traffic* (the
-hybrid cases), but I have not yet found a real public-domain recording with ≥ 2 tonal
-flyovers by ADS-B-equipped aircraft inside the data coverage. The White House Grand Canyon
-remarks (Red Butte Airfield, AZ, 2023-08-08 11:22 MST) are the best lead, but no
-redistributable copy was reachable from this environment (YouTube is bot-gated here, and
-the C-SPAN copy on archive.org is access-restricted). The other identified public-domain
-leads are White House tarmac press gaggles on Wikimedia Commons. Its file server was
-rate-limiting (HTTP 429) for hours, so none were downloaded:
-* Palm Beach International, 2026-01-19, about 18:26 EST (inside ADS-B coverage);
-* Joint Base Andrews, 2026-07-01, 08:30 EDT;
-* DFW, 2026-10-01, 15:14 CDT.
+### Real recordings: what was tried and what it shows
 
-The last two fall outside the mirror's coverage and would need an ADSBExchange
-1st-of-month source.
+**Search effort.** Two sources were screened systematically against historical ADS-B.
+
+* **radio aporee sound map.** All of its ~80k geotagged, time-stamped field recordings were
+  filtered to the continental US and ADS-B coverage: 287 recordings on adsb.lol mirror days
+  and 85 on the 1st of a month. All 372 were downloaded and run through flyover detection,
+  in three frequency bands. About 20 contain at least one tonal flyover.
+* **AeroSonicDB YPAD-0523** (Zenodo, CC BY-NC). These are ADS-B-labelled clips recorded under
+  Adelaide Airport's approach. On 2023-03-01, nine labelled aircraft passed in 45 min, and
+  that day is covered by ADSBExchange's 1st-of-month samples.
+
+**What works on real audio.** At the recordist's GPS pin, a real Doppler curve matches the
+ADS-B track of one specific aircraft, while every other aircraft nearby does not fit:
+
+| recording | aircraft | misfit at the pin | other aircraft | implied start vs metadata |
+|---|---|---|---|---|
+| Iowa City IA, 2023-12-04 | `ade930` | 0.02–0.03 | ≥ 0.5 (cap) | +146 s (metadata time is rounded) |
+| Log House Landing MN, 2023-04-26 | `aae678` | 0.016–0.026, in three separate frequency bands | ≥ 0.5 or inconsistent timing | +482–483 s, consistent across bands |
+
+For Iowa City, the blind search (30 km disc, ±30 min) also puts the right aircraft and start
+time in its top candidates. This is now a committed validation case.
+
+**What does not work yet: a blind fix from real audio.** No real recording found so far has
+two independent flyovers by ADS-B-equipped aircraft that `sya` can both detect and fit:
+
+* **Field recordings** usually catch at most one aircraft. A single aircraft fixes the time
+  and the cross-track distance, but leaves the along-track position free; Iowa City comes
+  out 4.9 km off for this reason.
+* **Dense traffic** (Venice Beach, LA, 2024-04-01, ADSBExchange): many flights fit any one
+  curve, but no single location and start time is consistent with all three flyovers.
+* **Close-in airport traffic** (AeroSonicDB, about 50–300 m away): sweeps are very steep,
+  pilots change engine power, and propeller combs confuse the fundamental. Two jets matched
+  their labelled aircraft (E190 cost 0.02, 737 cost 0.01), but with inconsistent timing, and
+  the Cessna 172 did not fit at all, likely because of engine power changes.
+* **Earlier attempts:** jets on approach heard as broadband noise (Rockaway NY), helicopters
+  not in ADS-B (Brooklyn NY), and no audible aircraft (Verde AZ, Medora ND).
+
+**Why it's hard to find better data here.** Free historical ADS-B covers only
+2023-03-10 → 2024-01-01, 2025-12-19 → 2026-02-03 (adsb.lol mirror), and the 1st of each month
+(ADSBExchange samples). The best-matched public audio falls outside these windows. For
+example, the Eclipse Soundscapes project has thousands of AudioMoth recordings across the US,
+with exact GPS and time, all on 2024-04-08.
+
+**What would settle it:**
+1. **Record a test clip yourself.** Record 15–20 minutes on a phone, under an approach path
+   or near a busy general-aviation airport, on the 1st of a month (ADSBExchange publishes
+   that day's samples) or on any day you can get ADS-B for. Note the GPS position and the
+   start time.
+2. **OpenSky research access.** With credentials (`--opensky`, via pyopensky), any date
+   becomes searchable. That opens the eclipse dataset and the rest of the sound map.
+3. **White House tarmac press gaggles** (public domain, on Wikimedia Commons). Wikimedia was
+   rate-limiting downloads throughout this session:
+   * Palm Beach International, 2026-01-19, about 18:26 EST (inside mirror coverage);
+   * Joint Base Andrews, 2026-07-01, 08:30 EDT;
+   * DFW, 2026-10-01, 15:14 CDT.
+
+   The last two need the ADSBExchange source.
 
 ## Benchmarks
 

@@ -176,14 +176,15 @@ tol_m = 300
 start = "2023-08-08T17:33:00Z"
 tol_s = 5
 
-# Fragile: busy GA pattern traffic. Passes offline here, but the same scene rendered with z10
-# terrain against the live cache came out ambiguous (biased flyover fits, 27 vs 40 m/s).
+# KNOWN FAILURE (kept on purpose): busy GA pattern traffic with biased flyover fits (27 vs 40 m/s).
+# It passed before misfit residuals were made frequency-relative (needed for real jet fan tones)
+# and fails since; it is the most fragile real-traffic scene in the suite.
 [[case]]
 name = "hybrid-nd-grandforks-radius-date"
 audio = "hybrid"
 args = ["--date", "2023-08-08", "--center", "47.92,-97.10", "--radius", "30km",
         "--cache-dir", "@/../data", "--offline", "--terrain", "tiles:z8", "--timeout", "120"]
-tags = ["hybrid", "real-adsb", "radius", "date", "nd"]
+tags = ["hybrid", "real-adsb", "radius", "date", "nd", "known-failure"]
 [case.hybrid]
 lat = 47.91343
 lon = -97.18042
@@ -208,3 +209,26 @@ args = ["--date", "2026-07-01", "--tz", "America/Denver", "--state", "ND",
 tags = ["real", "speech", "nd", "state", "date"]
 [case.expect]
 status = "none"
+
+# Iowa City, IA (Harlocke Hill Park), 2023-12-04 ~13:44 CST, radio aporee sound map
+# (natalie-tapscott, Public Domain Mark). One clear flyover (~1.2 km slant, ~40 m/s) of ADS-B
+# aircraft ade930. A single flyover cannot fix the along-track position, so the check is that the
+# blind search (30 km disc centred ~12 km from the truth, start window +-30 min) identifies the right
+# aircraft and the right start time. The truth start (13:46:26 CST) is when the curve fits ade930 at
+# the recordist's GPS pin; the metadata's "13:44" is rounded.
+[[case]]
+name = "real-ia-iowa-city-identifies-aircraft"
+audio = "../data/audio/iowa_city_harlocke_20231204.opus"
+args = ["--at", "2023-12-04T13:44", "--tolerance", "30m", "--tz", "America/Chicago",
+        "--center", "41.728,-91.454", "--radius", "30km", "--max-slope", "25",
+        "--cache-dir", "@/../data", "--offline", "--terrain", "tiles:z8", "--timeout", "120"]
+tags = ["real", "single-flyover", "radius", "at"]
+[case.expect]
+status = "ambiguous"
+flight = "ade930"
+start = "2023-12-04T19:46:26Z"
+tol_s = 30
+lat = 41.648472
+lon = -91.553905
+tol_m = 8000
+within_top = 5

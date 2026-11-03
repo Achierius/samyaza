@@ -150,14 +150,13 @@ def state(s: str) -> Region:
     return Region("state", f"{st['name']} ({ab})", st["bbox"], states=(ab,))
 
 
-def radius(lat: float, lon: float, radius_m: float) -> Region:
+def radius(lat: float, lon: float, radius_m: float, anywhere: bool = False) -> Region:
     dlat = radius_m / 111_000
     dlon = radius_m / (111_000 * max(np.cos(np.radians(lat)), 1e-3))
     reg = Region("radius", f"{radius_m / 1000:g} km around {lat:.4f},{lon:.4f}",
                  (lat - dlat, lon - dlon, lat + dlat, lon + dlon), center=(lat, lon), radius_m=radius_m)
-    cz = conus()
-    if not cz.contains(lat, lon)[0]:
-        raise ValueError("center must be inside the continental US")
+    if not anywhere and not conus().contains(lat, lon)[0]:
+        raise ValueError("center must be inside the continental US (use --anywhere to override)")
     return reg
 
 

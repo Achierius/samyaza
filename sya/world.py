@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import time
+import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -28,6 +29,10 @@ from .tracks import TrackTable
 
 CONUS_FETCH_BBOX = (24.0, -125.5, 49.6, -66.5)  # generous: includes approaches from coast/borders
 FT = 0.3048
+
+
+def _overlaps(a, b):
+    return not (a[2] < b[0] or a[0] > b[2] or a[3] < b[1] or a[1] > b[3])
 
 
 def default_cache_dir() -> str:
@@ -132,7 +137,13 @@ class HFAdsbLol:
         url_of = lambda path: self.file_url.format(repo=self.repo, path=path)
 
         def one_heat(path):
-            local = _http_get(url_of(path), os.path.join(tmpdir, path.replace("/", "_")))
+            try:
+                local = _http_get(url_of(path), os.path.join(tmpdir, path.replace("/", "_")))
+            except urllib.error.HTTPError as e:  # some days miss a few half-hour heatmaps
+                if e.code != 404:
+                    raise
+                z = np.zeros(0)
+                return np.zeros(0, dtype=object), z, z, z
             t = pq.read_table(local, columns=["icao", "timestamp", "lat", "lon"])
             t = t.filter(pc.and_(pc.and_(pc.greater_equal(t["lat"], bbox[0]), pc.less_equal(t["lat"], bbox[2])),
                                  pc.and_(pc.greater_equal(t["lon"], bbox[1]), pc.less_equal(t["lon"], bbox[3]))))
@@ -185,6 +196,10 @@ def _http_get(url, local, tries=4):
                 fh.write(data)
             os.replace(local + ".part", local)
             return local
+        except urllib.error.HTTPError as e:
+            if e.code == 404 or attempt == tries - 1:
+                raise
+            time.sleep(2 ** (attempt + 1))
         except OSError:
             if attempt == tries - 1:
                 raise
@@ -226,6 +241,93 @@ def _trace_job(job):
 
 
 
+class ADSBxSamples:
+    """ADS-B Exchange free historical samples (https://samples.adsbexchange.com): full-resolution
+    readsb traces with exact timestamps, but only for the 1st day of each month (2016-07 onwards).
+
+    A day is fetched by (1) reading global readsb-hist snapshots every `discover_every_s` to find
+    aircraft seen over the fetch bbox, then (2) downloading those aircraft's full traces."""
+
+    name = "adsbx"
+    base = "https://samples.adsbexchange.com"
+
+    def __init__(self, cache_dir: str, discover_every_s: int = 600):
+        self.cache_dir = cache_dir
+        self.every = discover_every_s
+
+    def covers(self, day: date) -> bool:
+        return day.day == 1 and day >= date(2016, 7, 1)
+
+    def _get(self, url):
+        import gzip as _gz
+
+        for attempt in range(4):
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "sya/0.2"})
+                with urllib.request.urlopen(req, timeout=120) as r:
+                    data = r.read()
+                return json.loads(_gz.decompress(data) if data[:2] == b"\x1f\x8b" else data)
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    return None
+                if attempt == 3:
+                    raise
+            except OSError:
+                if attempt == 3:
+                    raise
+            time.sleep(2 ** (attempt + 1))
+
+    def fetch_day(self, day: date, bbox, progress=None, workers: int = 8, t_lo=None, t_hi=None):
+        """t_lo/t_hi (unix) restrict aircraft discovery to that time span (traces are still whole-day)."""
+        from .adsb import parse_readsb_trace
+
+        ymd = f"{day.year:04d}/{day.month:02d}/{day.day:02d}"
+        d0 = datetime(day.year, day.month, day.day, tzinfo=timezone.utc).timestamp()
+        lo = 0 if t_lo is None else max(0, int(t_lo - d0))
+        hi = 86400 if t_hi is None else min(86400, int(t_hi - d0) + 1)
+        stamps = [f"{x // 3600:02d}{x % 3600 // 60:02d}00Z" for x in range(0, 86400, self.every) if lo - self.every <= x <= hi]
+        seen = set()
+
+        def snap(st):
+            d = self._get(f"{self.base}/readsb-hist/{ymd}/{st}.json.gz")
+            out = set()
+            for a in (d or {}).get("aircraft", []):
+                la, lo = a.get("lat"), a.get("lon")
+                if la is not None and bbox[0] <= la <= bbox[2] and bbox[1] <= lo <= bbox[3]:
+                    out.add(a["hex"])
+            return out
+
+        total = len(stamps)
+        with ThreadPoolExecutor(workers) as ex:
+            for f in as_completed([ex.submit(snap, st) for st in stamps]):
+                seen |= f.result()
+                if progress:
+                    progress(1, total + 1)
+        icaos = sorted(seen)
+
+        def trace(icao):
+            d = self._get(f"{self.base}/traces/{ymd}/{icao[-2:]}/trace_full_{icao}.json")
+            return parse_readsb_trace(d, bbox=bbox) if d else []
+
+        cols = {k: [] for k in ("icao", "t", "lat", "lon", "alt_m")}
+        with ThreadPoolExecutor(workers) as ex:
+            for f in as_completed([ex.submit(trace, i) for i in icaos]):
+                for tr in f.result():
+                    cols["icao"].append(np.full(tr.t.size, tr.icao, dtype=object))
+                    cols["t"].append(tr.t)
+                    cols["lat"].append(tr.lat)
+                    cols["lon"].append(tr.lon)
+                    cols["alt_m"].append(tr.alt_m)
+        if progress:
+            progress(1, total + 1)
+        if not cols["t"]:
+            return {k: np.zeros(0) for k in cols}
+        out = {k: np.concatenate(v) for k, v in cols.items()}
+        d0 = datetime(day.year, day.month, day.day, tzinfo=timezone.utc).timestamp()
+        keep = (out["t"] >= d0) & (out["t"] < d0 + 86400)
+        return {k: v[keep] for k, v in out.items()}
+
+
 # ------------------------------------------------------------------------- cache
 class AdsbCache:
     def __init__(self, cache_dir: str | None = None, sources=None, offline: bool = False,
@@ -233,7 +335,7 @@ class AdsbCache:
         self.dir = cache_dir or default_cache_dir()
         self.offline = offline
         self.readonly = readonly
-        self.sources = sources if sources is not None else [HFAdsbLol(self.dir)]
+        self.sources = sources if sources is not None else [HFAdsbLol(self.dir), ADSBxSamples(self.dir)]
         self._limit = limit_bytes
 
     @property
@@ -264,19 +366,37 @@ class AdsbCache:
                                     last_used=os.path.getmtime(lu) if os.path.exists(lu) else os.path.getmtime(p)))
         return out
 
-    def _find_day(self, day: date):
+    def _find_day(self, day: date, bbox=None):
+        """A cached day whose coverage contains bbox (CONUS days cover CONUS_FETCH_BBOX; regional
+        days, marked by _REGION, cover their own bbox)."""
         root = os.path.join(self.dir, "adsb")
-        if os.path.isdir(root):
-            for src in sorted(os.listdir(root)):
-                p = os.path.join(root, src, day.isoformat())
-                if os.path.isdir(p) and any(f.endswith(".parquet") for f in os.listdir(p)):
-                    return p
-        return None
+        if not os.path.isdir(root):
+            return None
+        fallback = None
+        for src in sorted(os.listdir(root)):
+            p = os.path.join(root, src, day.isoformat())
+            if not (os.path.isdir(p) and any(f.endswith(".parquet") for f in os.listdir(p))):
+                continue
+            reg = os.path.join(p, "_REGION")
+            cov = json.load(open(reg))["bbox"] if os.path.exists(reg) else CONUS_FETCH_BBOX
+            if bbox is None or (cov[0] <= bbox[0] and cov[1] <= bbox[1] and cov[2] >= bbox[2] and cov[3] >= bbox[3]):
+                return p
+            if _overlaps(cov, bbox):
+                fallback = fallback or p
+        return fallback
 
-    def ensure_day(self, day: date, progress=None):
-        p = self._find_day(day)
+    def ensure_day(self, day: date, progress=None, bbox=None):
+        p = self._find_day(day, bbox)
         if p is not None:
             return p
+        if bbox is not None and not (_overlaps(CONUS_FETCH_BBOX, bbox)):
+            # outside CONUS: regional fetch on demand (never in offline mode)
+            if self.offline:
+                return None
+            for src in self.sources:
+                if src.covers(day):
+                    return self.ensure_region(day, bbox, progress=progress, source=src.name)
+            return None
         if self.offline:
             return None
         for src in self.sources:
@@ -287,6 +407,23 @@ class AdsbCache:
                 self.prune(keep={p})
                 return p
         return None
+
+    def ensure_region(self, day: date, bbox, t_lo=None, t_hi=None, progress=None, source="adsbx"):
+        """Fetch a *regional* subset of one day from a source that supports it (ADSBx samples) and
+        store it like a normal day, with a _REGION marker recording the bbox it covers."""
+        tag = "@" + "_".join(f"{v:.2f}" for v in bbox) if source != "adsbx" else ""
+        p = self.day_dir(source + tag, day)
+        reg = os.path.join(p, "_REGION")
+        if os.path.exists(reg):
+            b = json.load(open(reg))["bbox"]
+            if b[0] <= bbox[0] and b[1] <= bbox[1] and b[2] >= bbox[2] and b[3] >= bbox[3]:
+                return p
+        src = next(s_ for s_ in self.sources if s_.name == source)
+        kw = dict(t_lo=t_lo, t_hi=t_hi) if source == "adsbx" else {}
+        cols = src.fetch_day(day, bbox, progress=progress, **kw)
+        self._write_day(p, cols, day)
+        json.dump(dict(bbox=list(bbox), t_lo=t_lo, t_hi=t_hi), open(reg, "w"))
+        return p
 
     def _write_day(self, p, cols, day):
         import pyarrow as pa
@@ -324,7 +461,7 @@ class AdsbCache:
 
         tables = []
         for day in _days(t_lo, t_hi):
-            p = self.ensure_day(day, progress=progress)
+            p = self.ensure_day(day, progress=progress, bbox=bbox)
             if p is None:
                 if on_missing:
                     on_missing(day)

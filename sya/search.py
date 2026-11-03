@@ -34,6 +34,7 @@ from .tracks import Resampled, resample
 
 MAX_TERRAIN_M = 4400.0
 UNMATCHED_COST = 0.5  # misfit charged for a flyover no ADS-B flight explains
+REF_HZ = 100.0  # misfit residuals are expressed relative to the tone: Hz at a 100 Hz tone
 PRESCORE_GRID = [(de, dn) for de in (-500.0, 0.0, 500.0) for dn in (-500.0, 0.0, 500.0)]
 
 
@@ -335,10 +336,10 @@ def curve_misfit(events, trs, obs, T0, c, huber=1.0, shifts=None):
         w, f, g = ev.w[ok], ev.f[ok], g[ok]
         f0 = np.sum(w * f * g) / np.sum(w * g * g)
         res = f - f0 * g
-        a = np.abs(res)
+        a = np.abs(res) * (REF_HZ / max(f0, 1.0))  # scale-free: residual as if the tone were REF_HZ
         hub = np.where(a < huber, 0.5 * a * a, huber * (a - 0.5 * huber))
         total += min(np.sum(w * hub) / np.sum(w), UNMATCHED_COST)  # a bad match never beats no match
-        rms.append(float(np.sqrt(np.average(res**2, weights=w))))
+        rms.append(float(np.sqrt(np.average(res**2, weights=w))) * REF_HZ / max(f0, 1.0))
         f0s.append(float(f0))
         used += 1
     if used == 0:
@@ -371,7 +372,7 @@ def _misfit_geoms(events, geoms, T0, huber=1.0):
             continue
         w, f, g = ev.w[ok], ev.f[ok], g[ok]
         f0 = np.sum(w * f * g) / np.sum(w * g * g)
-        a = np.abs(f - f0 * g)
+        a = np.abs(f - f0 * g) * (REF_HZ / max(f0, 1.0))
         total += min(np.sum(w * np.where(a < huber, 0.5 * a * a, huber * (a - 0.5 * huber))) / np.sum(w),
                      UNMATCHED_COST)
         used += 1
@@ -393,7 +394,7 @@ def _misfit_scan(events, geoms, T0s, huber=1.0):
         g = np.where(ok, g, 0.0)
         w = ev.w[None, :] * ok
         f0 = np.sum(w * ev.f * g, 1) / np.maximum(np.sum(w * g * g, 1), 1e-12)
-        a = np.abs(ev.f[None, :] - f0[:, None] * g)
+        a = np.abs(ev.f[None, :] - f0[:, None] * g) * (REF_HZ / np.maximum(f0, 1.0))[:, None]
         hub = np.where(a < huber, 0.5 * a * a, huber * (a - 0.5 * huber))
         cst = np.minimum(np.sum(w * hub, 1) / np.maximum(np.sum(w, 1), 1e-12), UNMATCHED_COST)
         total += np.where(cover, cst, 0.0)
@@ -630,7 +631,19 @@ def n_good(sol: Solution, cfg: SearchConfig) -> int:
     return int(sum(1 for r in sol.rms_hz if np.isfinite(r) and r < cfg.good_rms_hz))
 
 
-def decide(sols, cfg: SearchConfig):
+def n_independent(sol: Solution, cfg: SearchConfig, events=None) -> int:
+    """Well-explained flyovers that are independent constraints: several spectral lines of one
+    aircraft's single pass (an engine/rotor comb) count once."""
+    keys = set()
+    for k, (r, ic) in enumerate(zip(sol.rms_hz, sol.flights)):
+        if ic is None or not np.isfinite(r) or r >= cfg.good_rms_hz:
+            continue
+        tca = events[k].fit.t_ca if events is not None else k * 1000.0
+        keys.add((ic, int(round(tca / 60.0))))
+    return len(keys)
+
+
+def decide(sols, cfg: SearchConfig, events=None):
     """solved: the best explains >= 2 flyovers well (rms < good_rms_hz) and every rival elsewhere
     (> isolate_km or > 30 s away) costs at least isolate_margin more (~one unexplained flyover)."""
     if not sols:
@@ -639,7 +652,7 @@ def decide(sols, cfg: SearchConfig):
     need = min(2, len(best.rms_hz)) if best.rms_hz else 2
     rivals = [s for s in sols[1:] if s.cost < best.cost + cfg.isolate_margin and n_good(s, cfg) >= need and
               (haversine_m(s.lat, s.lon, best.lat, best.lon) > cfg.isolate_km * 1000 or abs(s.T0 - best.T0) > 30)]
-    if n_good(best, cfg) >= 2 and not rivals:
+    if n_good(best, cfg) >= 2 and n_independent(best, cfg, events) >= 2 and not rivals:
         return "solved", best
     return "ambiguous", best
 
@@ -785,7 +798,7 @@ def search(events: list[Event], world, region: Region, window, rec_dur: float, c
     pool = polish(pool, ctx["events_fast"], c, cfg, log, polish_deadline)
     sols = refine(pool, events, c, cfg, log, deadline)
     sols = [s_ for s_ in _merge_solutions(sols) if n_good(s_, cfg) >= 1]  # must explain something
-    status, best = decide(sols, cfg)
+    status, best = decide(sols, cfg, events)
     if missing_days:
         notes.append(f"no ADS-B data available for: {', '.join(sorted(missing_days))}")
     if timed_out:
