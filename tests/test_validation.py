@@ -15,7 +15,14 @@ HERE = os.path.join(os.path.dirname(__file__), "validation")
 
 def _cases(fname):
     p = os.path.join(HERE, fname)
-    return [pytest.param(c, id=c["name"]) for c in load_cases(p)] if os.path.exists(p) else []
+    if not os.path.exists(p):
+        return []
+    out = []
+    for c in load_cases(p):
+        marks = [pytest.mark.xfail(reason="documented known failure", strict=False)] \
+            if "known-failure" in c.get("tags", []) else []
+        out.append(pytest.param(c, id=c["name"], marks=marks))
+    return out
 
 
 @pytest.mark.validation

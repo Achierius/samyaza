@@ -78,7 +78,8 @@ def hybrid_audio(h: dict, base: str, cache_dir: str) -> str:
     key = f"hybrid_{h['lat']:.5f}_{h['lon']:.5f}_{h['start'].replace(':', '')}_{h.get('seed', 0)}"
     path = os.path.join(cache_dir, key + ".flac")
     if not os.path.exists(path):
-        world = make_real_world(os.path.join(base, h.get("cache_dir", "../data")), offline=True)
+        world = make_real_world(os.path.join(base, h.get("cache_dir", "../data")), offline=True,
+                                terrain=h.get("terrain", "tiles:z8"))
         w = hybrid_world(world, h["lat"], h["lon"], parse_timestamp(h["start"]), h.get("dur", 900.0),
                          seed=h.get("seed", 0))
         x, fs = render_audio(w, seed=h.get("seed", 0) + 2)

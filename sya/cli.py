@@ -394,7 +394,7 @@ def cmd_cache(a):
     elif a.action == "freeze":
         win = time_window(a)
         reg = area(a)
-        bbox = reg.padded_bbox(10000)
+        bbox = reg.padded_bbox(25000)
         n = cache.freeze(a.out, win.t_lo, win.t_hi, bbox)
         from .terrain import freeze_tiles
 

@@ -118,3 +118,78 @@ lat = 33.4387
 lon = -112.04672
 tol_m = 1500
 within_top = 50
+
+# ------------------------------------------- hybrid: REAL ADS-B (frozen in tests/data), synthetic audio
+# Audio is rendered from the real traffic heard at the observer (each flight time-jittered by
+# ~1.5 s to mimic ADS-B timing error), then located against the same frozen data.
+[[case]]
+name = "hybrid-nd-fargo-state-between-local"
+audio = "hybrid"
+args = ["--state", "ND", "--between", "2023-08-08T07:00", "2023-08-08T09:00", "--tz", "America/Chicago",
+        "--cache-dir", "@/../data", "--offline", "--terrain", "tiles:z8", "--timeout", "120"]
+tags = ["hybrid", "real-adsb", "state", "between", "nd"]
+[case.hybrid]
+lat = 46.90821
+lon = -96.82014
+start = "2023-08-08T13:02:00Z"
+[case.expect]
+status = "solved"
+lat = 46.90821
+lon = -96.82014
+tol_m = 300
+start = "2023-08-08T13:02:00Z"
+tol_s = 5
+
+[[case]]
+name = "hybrid-az-phoenix-state-between-local"
+audio = "hybrid"
+args = ["--state", "AZ", "--between", "2023-08-08T09:30", "2023-08-08T11:30", "--tz", "America/Phoenix",
+        "--cache-dir", "@/../data", "--offline", "--terrain", "tiles:z8", "--timeout", "120"]
+tags = ["hybrid", "real-adsb", "state", "between", "az"]
+[case.hybrid]
+lat = 33.29914
+lon = -112.16786
+start = "2023-08-08T17:43:00Z"
+[case.expect]
+status = "solved"
+lat = 33.29914
+lon = -112.16786
+tol_m = 300
+start = "2023-08-08T17:43:00Z"
+tol_s = 5
+
+[[case]]
+name = "hybrid-az-phoenix-radius-date"
+audio = "hybrid"
+args = ["--date", "2023-08-08", "--center", "33.45,-112.0", "--radius", "40km",
+        "--cache-dir", "@/../data", "--offline", "--terrain", "tiles:z8", "--timeout", "120"]
+tags = ["hybrid", "real-adsb", "radius", "date", "az"]
+[case.hybrid]
+lat = 33.5416
+lon = -111.91881
+start = "2023-08-08T17:33:00Z"
+[case.expect]
+status = "solved"
+lat = 33.5416
+lon = -111.91881
+tol_m = 300
+start = "2023-08-08T17:33:00Z"
+tol_s = 5
+
+# Fragile: busy GA pattern traffic. Passes offline here, but the same scene rendered with z10
+# terrain against the live cache came out ambiguous (biased flyover fits, 27 vs 40 m/s).
+[[case]]
+name = "hybrid-nd-grandforks-radius-date"
+audio = "hybrid"
+args = ["--date", "2023-08-08", "--center", "47.92,-97.10", "--radius", "30km",
+        "--cache-dir", "@/../data", "--offline", "--terrain", "tiles:z8", "--timeout", "120"]
+tags = ["hybrid", "real-adsb", "radius", "date", "nd"]
+[case.hybrid]
+lat = 47.91343
+lon = -97.18042
+start = "2023-08-08T13:20:00Z"
+[case.expect]
+status = "solved"
+lat = 47.91343
+lon = -97.18042
+tol_m = 300

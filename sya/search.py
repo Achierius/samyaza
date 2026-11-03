@@ -34,7 +34,7 @@ from .tracks import Resampled, resample
 
 MAX_TERRAIN_M = 4400.0
 UNMATCHED_COST = 0.5  # misfit charged for a flyover no ADS-B flight explains
-PRESCORE_GRID = [(de, dn) for de in (-400.0, 0.0, 400.0) for dn in (-400.0, 0.0, 400.0)]
+PRESCORE_GRID = [(de, dn) for de in (-500.0, 0.0, 500.0) for dn in (-500.0, 0.0, 500.0)]
 
 
 @dataclass
@@ -46,10 +46,10 @@ class SearchConfig:
     tol_v_min: float = 6.0
     tol_d_frac: float = 0.25
     tol_d_min: float = 150.0
-    tol_t_min: float = 6.0  # real ADS-B timestamps carry a few seconds of error
+    tol_t_min: float = 8.0  # real ADS-B timestamps carry a few seconds of error
     track_dt_sigma: float = 2.0  # prior on per-flight ADS-B time error (s) in refinement
     track_dt_weight: float = 0.1
-    join_radius_m: float = 700.0
+    join_radius_m: float = 1000.0
     min_events: int = 2  # events that must be matched to an ADS-B flight (if >= 2 detected)
     silence_frac: float = 0.6  # silence radius = this * min detected d (0 disables)
     silence_weight: float = 3.0
@@ -66,7 +66,7 @@ class SearchConfig:
     workers: int = 4  # parallel time chunks (processes)  # minimum work per stage even past the deadline
     min_polish: int = 40
     min_refine: int = 8
-    max_join_d: float = 3000.0
+    max_join_d: float = 5000.0
     timeout_s: float = 60.0
     isolate_margin: float = 0.5  # runner-up (elsewhere) must cost this much more
     isolate_km: float = 1.5
