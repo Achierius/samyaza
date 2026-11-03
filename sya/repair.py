@@ -124,11 +124,13 @@ def _chain_with_speed(out, frac, P, gs, a_idx, a_t, a_xy, max_dt=40.0, q=90, win
         order = np.argsort(tf)
         lb, tf = lb[order], tf[order]
         centers = np.arange(tf[0], tf[-1] + window_s / 2, window_s / 2)
+        lo_i = np.searchsorted(tf, centers - window_s, "left")
+        hi_i = np.searchsorted(tf, centers + window_s, "right")
         offs, cs = [], []
-        for c in centers:
-            w = np.abs(tf - c) <= window_s
-            if w.sum() >= 4:
-                offs.append(np.percentile(lb[w], q) + HEAT_LAG_LOW)
+        for c, i0, i1 in zip(centers, lo_i, hi_i):
+            if i1 - i0 >= 4:
+                v = np.sort(lb[i0:i1])
+                offs.append(v[min(len(v) - 1, int(round(q / 100 * (len(v) - 1))))] + HEAT_LAG_LOW)
                 cs.append(c)
         if not offs:
             offs, cs = [np.percentile(lb, q) + HEAT_LAG_LOW], [tf.mean()]

@@ -18,6 +18,11 @@ Cases live in a TOML file:
     tol_s = 5
 
 Paths inside `args` that start with "@/" are resolved relative to the TOML file.
+
+`audio = "hybrid"` renders audio from REAL (frozen) ADS-B at a given observer:
+    [case.hybrid]
+    lat = 46.9  ;  lon = -96.8  ;  start = "2023-08-08T18:20:00Z"  ;  seed = 0
+    cache_dir = "../data"     # frozen ADS-B + terrain, relative to the TOML
 """
 from __future__ import annotations
 
@@ -60,6 +65,28 @@ def synth_audio(spec: str, cache_dir: str) -> str:
     return path
 
 
+def hybrid_audio(h: dict, base: str, cache_dir: str) -> str:
+    """Render audio for a [case.hybrid] table: real (frozen) ADS-B, synthetic sound."""
+    import soundfile as sf
+
+    from .hybrid import hybrid_world
+    from .synth import render_audio
+    from .timespec import parse_timestamp
+    from .world import make_real_world
+
+    os.makedirs(cache_dir, exist_ok=True)
+    key = f"hybrid_{h['lat']:.5f}_{h['lon']:.5f}_{h['start'].replace(':', '')}_{h.get('seed', 0)}"
+    path = os.path.join(cache_dir, key + ".flac")
+    if not os.path.exists(path):
+        world = make_real_world(os.path.join(base, h.get("cache_dir", "../data")), offline=True)
+        w = hybrid_world(world, h["lat"], h["lon"], parse_timestamp(h["start"]), h.get("dur", 900.0),
+                         seed=h.get("seed", 0))
+        x, fs = render_audio(w, seed=h.get("seed", 0) + 2)
+        sf.write(path + ".tmp.flac", x, fs)
+        os.replace(path + ".tmp.flac", path)
+    return path
+
+
 def load_cases(path: str):
     with open(path, "rb") as fh:
         return tomllib.load(fh).get("case", [])
@@ -69,7 +96,9 @@ def run_case(case: dict, base: str) -> CaseResult:
     from .cli import run
 
     audio = case["audio"]
-    if audio.startswith("synth:"):
+    if audio == "hybrid":
+        audio = hybrid_audio(case["hybrid"], base, os.path.join(base, ".synth-cache"))
+    elif audio.startswith("synth:"):
         audio = synth_audio(audio, os.path.join(base, ".synth-cache"))
     elif not os.path.isabs(audio):
         audio = os.path.join(base, audio)

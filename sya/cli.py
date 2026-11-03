@@ -105,7 +105,7 @@ def add_world_args(p):
                    help="real (historical ADS-B, cached) | synth:<preset>[:seed] | csv:<file> | readsb:<dir>")
     g.add_argument("--cache-dir", help="cache root (default $SYA_CACHE_DIR or ~/.cache/sya)")
     g.add_argument("--offline", action="store_true", help="never download; use only cached data")
-    g.add_argument("--terrain", default="tiles", help="tiles | flat:<metres>")
+    g.add_argument("--terrain", default="tiles", help="tiles | tiles:z<zoom> (default z10) | flat:<metres>")
 
 
 def make_world(a):
@@ -394,8 +394,12 @@ def cmd_cache(a):
     elif a.action == "freeze":
         win = time_window(a)
         reg = area(a)
-        n = cache.freeze(a.out, win.t_lo, win.t_hi, reg.padded_bbox(10000))
-        out_console.print(f"froze {n:,} rows into {a.out}")
+        bbox = reg.padded_bbox(10000)
+        n = cache.freeze(a.out, win.t_lo, win.t_hi, bbox)
+        from .terrain import freeze_tiles
+
+        nt = freeze_tiles(os.path.join(cache.dir, "terrain"), a.out, bbox, zoom=a.zoom)
+        out_console.print(f"froze {n:,} ADS-B rows and {nt} terrain tiles (z{a.zoom}) into {a.out}")
 
 
 def cmd_validate(a):
@@ -450,6 +454,7 @@ def build_parser():
     s.add_argument("--cache-dir")
     s.add_argument("--limit", help="size limit for prune, e.g. 5G")
     s.add_argument("--out", default="tests/data", help="freeze destination")
+    s.add_argument("--zoom", type=int, default=8, help="terrain tile zoom to freeze")
     add_time_args(s)
     add_area_args(s)
     s.set_defaults(fn=cmd_cache)

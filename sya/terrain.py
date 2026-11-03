@@ -96,3 +96,33 @@ class TileTerrain:
             if arr is not None:
                 out[m] = arr[py[m], px[m]]
         return (np.maximum(out, -100) + self.geoid).reshape(shape)
+
+
+def tiles_for_bbox(bbox, zoom):
+    lat0, lon0, lat1, lon1 = bbox
+    n = 2 ** zoom
+
+    def xy(lat, lon):
+        lr = np.radians(lat)
+        return int((lon + 180) / 360 * n), int((1 - np.log(np.tan(lr) + 1 / np.cos(lr)) / np.pi) / 2 * n)
+
+    x0, y1 = xy(lat0, lon0)
+    x1, y0 = xy(lat1, lon1)
+    return [(x, y) for x in range(x0, x1 + 1) for y in range(y0, y1 + 1)]
+
+
+def freeze_tiles(cache_dir: str, out_dir: str, bbox, zoom: int = 8) -> int:
+    """Fetch (into the main cache) and copy the terrain tiles covering bbox into out_dir."""
+    import shutil
+
+    src = TileTerrain(cache_dir, zoom=zoom)
+    dst = os.path.join(out_dir, "terrain", f"terrarium-z{zoom}")
+    os.makedirs(dst, exist_ok=True)
+    n = 0
+    for x, y in tiles_for_bbox(bbox, zoom):
+        src._tile(x, y)
+        f = os.path.join(src.dir, f"{x}_{y}.png")
+        if os.path.exists(f):
+            shutil.copy(f, dst)
+            n += 1
+    return n

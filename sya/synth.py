@@ -184,3 +184,15 @@ def render_audio(world: SynthWorld, fs=4000, noise=1.0, seed=2, max_range=6000.0
             sig += a * np.sin(2 * np.pi * h * fl.f0 * (te[ok] - world.T0) + rng.uniform(0, 2 * np.pi))
         x[ok] += amp * sig
     return (x / np.max(np.abs(x)) * 0.9).astype(np.float32), fs
+
+
+def event_from_truth(world: SynthWorld, fl: Flight, t0_rel: float, t1_rel: float, noise=0.2, seed=0):
+    """The flyover Event the audio stage would emit for flight `fl` (skips audio rendering)."""
+    from .audio import Event, fit_pass
+    from .physics import received_ratio
+
+    rng = np.random.default_rng(seed)
+    t_r, _, ratio = received_ratio(fl.t, fl.p, world.obs, world.c)
+    t = np.arange(t0_rel, t1_rel, 0.1)
+    f = fl.f0 * np.interp(world.T0 + t, t_r, ratio) + rng.normal(0, noise, t.size)
+    return Event(t, f, np.ones_like(t), fit_pass(t, f, c=world.c))
