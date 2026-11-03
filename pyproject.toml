@@ -1,0 +1,20 @@
+[project]
+name = "planeloc"
+version = "0.1.0"
+description = "Geolocate audio recordings by matching aircraft Doppler curves to ADS-B tracks"
+requires-python = ">=3.10"
+dependencies = ["numpy", "scipy", "matplotlib", "soundfile"]
+
+[project.optional-dependencies]
+opensky = ["pyopensky"]
+test = ["pytest"]
+
+[project.scripts]
+planeloc = "planeloc.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["planeloc"]
